@@ -14,7 +14,8 @@ def test_create_new_run_directory(temp_dir: Path):
     run_dir = RunDirectory(run_path)
     metadata = RunMetadata(
         model="claude-sonnet-4-5",
-        infuser_config={"git_hash": "abc123", "planning_enabled": False},
+        git_hash="abc123",
+        infuser_config={"planning_enabled": False, "verification_enabled": True},
         test_set=1,
         notes="Test run",
     )
@@ -29,8 +30,12 @@ def test_create_new_run_directory(temp_dir: Path):
 
     with open(run_path / "run.json") as f:
         run_data = json.load(f)
+    # model and git_hash at root level for compatibility
     assert run_data["model"] == "claude-sonnet-4-5"
-    assert run_data["infuser_config"]["git_hash"] == "abc123"
+    assert run_data["git_hash"] == "abc123"
+    # full infuser config preserved
+    assert run_data["infuser_config"]["planning_enabled"] is False
+    assert run_data["infuser_config"]["verification_enabled"] is True
 
 
 def test_load_existing_results(temp_dir: Path):
@@ -176,6 +181,50 @@ def test_get_output_path(temp_dir: Path):
     assert output_path == temp_dir / "run" / "13-1-output.xlsx"
 
 
+def test_get_result_returns_result_dict(temp_dir: Path):
+    """get_result() returns the result dict for a completed task."""
+    # Arrange
+    run_path = temp_dir / "get-result-test"
+    run_path.mkdir()
+
+    results = [
+        {"task_id": "13-1", "result": "pass", "duration_seconds": 45.0},
+        {"task_id": "17-35", "result": "fail", "duration_seconds": 30.0},
+    ]
+    with open(run_path / "results.json", "w") as f:
+        json.dump(results, f)
+
+    run_dir = RunDirectory(run_path)
+    run_dir.load()
+
+    # Act
+    result = run_dir.get_result("13-1")
+
+    # Assert
+    assert result is not None
+    assert result["task_id"] == "13-1"
+    assert result["result"] == "pass"
+
+
+def test_get_result_returns_none_for_missing(temp_dir: Path):
+    """get_result() returns None for tasks not in results."""
+    # Arrange
+    run_path = temp_dir / "get-result-missing"
+    run_path.mkdir()
+
+    with open(run_path / "results.json", "w") as f:
+        json.dump([], f)
+
+    run_dir = RunDirectory(run_path)
+    run_dir.load()
+
+    # Act
+    result = run_dir.get_result("99-99")
+
+    # Assert
+    assert result is None
+
+
 def test_create_preserves_existing_results(temp_dir: Path):
     """create() must not overwrite existing results.json."""
     # Arrange - directory with results.json but no run.json
@@ -190,7 +239,7 @@ def test_create_preserves_existing_results(temp_dir: Path):
         json.dump(existing_results, f)
 
     run_dir = RunDirectory(run_path)
-    metadata = RunMetadata(model="test-model", infuser_config={})
+    metadata = RunMetadata(model="test-model", git_hash="test123", infuser_config={})
 
     # Act - create run.json (results.json already exists)
     run_dir.create(metadata)

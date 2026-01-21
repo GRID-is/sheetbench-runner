@@ -169,8 +169,8 @@ async def cli(
     print(f"Total tasks:  {stats.total_tasks}")
     print(f"Skipped:      {stats.skipped} (already completed)")
     print(f"Completed:    {stats.completed}")
-    if stats.completed > stats.skipped:
-        evaluated = stats.completed - stats.skipped
+    if stats.passed + stats.failed > 0:
+        evaluated = stats.passed + stats.failed
         print(f"  Passed:     {stats.passed} ({100*stats.passed/evaluated:.1f}%)")
         print(f"  Failed:     {stats.failed} ({100*stats.failed/evaluated:.1f}%)")
     if stats.errors:
