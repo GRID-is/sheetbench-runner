@@ -40,20 +40,6 @@ def test_filter_by_task_ids(sample_dataset_dir: Path):
     assert {t.id for t in tasks} == {"13-1", "17-35"}
 
 
-def test_filter_by_exclusion(sample_dataset_dir: Path):
-    """Test filtering with exclusion list."""
-    # Arrange
-    dataset = Dataset(sample_dataset_dir)
-    exclude_ids = dataset.get_excluded_task_ids()
-
-    # Act
-    tasks = dataset.filter_tasks(exclude_ids=exclude_ids)
-
-    # Assert
-    assert len(tasks) == 2
-    assert "vba-task" not in {t.id for t in tasks}
-
-
 def test_get_input_path(sample_dataset_dir: Path):
     """Test getting input file path for a task."""
     # Arrange

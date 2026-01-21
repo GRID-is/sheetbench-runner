@@ -37,52 +37,19 @@ class Dataset:
         """Return all tasks in the dataset."""
         return list(self._tasks)
 
-    def get_excluded_task_ids(self, exclude_file: Path | None = None) -> set[str]:
+    def filter_tasks(self, task_ids: set[str] | None = None) -> list[Task]:
         """
-        Load task IDs to exclude from a file.
-
-        Default: looks for excluded_vba_tasks.txt in the dataset directory.
-        """
-        if exclude_file is None:
-            exclude_file = self.dataset_path / "excluded_vba_tasks.txt"
-
-        if not exclude_file.exists():
-            return set()
-
-        excluded: set[str] = set()
-        with open(exclude_file) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    excluded.add(line)
-        return excluded
-
-    def filter_tasks(
-        self,
-        task_ids: set[str] | None = None,
-        exclude_ids: set[str] | None = None,
-    ) -> list[Task]:
-        """
-        Filter tasks based on criteria.
+        Filter tasks to only include specific task IDs.
 
         Args:
             task_ids: If provided, only include these specific task IDs
-            exclude_ids: Task IDs to exclude (typically VBA tasks)
 
         Returns:
-            Filtered list of tasks
+            Filtered list of tasks (or all tasks if no filter provided)
         """
-        tasks = self._tasks
-
-        # Apply exclusions first
-        if exclude_ids:
-            tasks = [t for t in tasks if t.id not in exclude_ids]
-
-        # Then apply inclusion filter
         if task_ids:
-            tasks = [t for t in tasks if t.id in task_ids]
-
-        return tasks
+            return [t for t in self._tasks if t.id in task_ids]
+        return list(self._tasks)
 
     def get_input_path(self, task: Task) -> Path:
         """Get the path to the input spreadsheet for a task."""
