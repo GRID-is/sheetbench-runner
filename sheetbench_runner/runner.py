@@ -234,12 +234,9 @@ async def run(
     evaluator = Evaluator(dataset_path)
     run_dir = RunDirectory(run_dir_path)
 
-    # Create or resume run directory
-    if run_dir.run_json_path.exists():
-        logger.info(f"Resuming run from {run_dir_path}")
-        run_dir.load()
-    else:
-        logger.info(f"Creating new run at {run_dir_path}")
+    # Create run.json if missing
+    if not run_dir.run_json_path.exists():
+        logger.info(f"Creating run metadata at {run_dir_path}")
         # Get model info from infuser
         async with InfuserClient(infuser_url, timeout_seconds) as infuser:
             try:
@@ -261,6 +258,11 @@ async def run(
             infuser_config=config,
         )
         run_dir.create(metadata)
+
+    # Always load existing results (for resume)
+    run_dir.load()
+    if run_dir.get_completed_count() > 0:
+        logger.info(f"Resuming: {run_dir.get_completed_count()} tasks already completed")
 
     # Run tasks
     async with InfuserClient(infuser_url, timeout_seconds) as infuser:
