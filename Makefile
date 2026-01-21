@@ -6,10 +6,14 @@ test:
 lint:
 	uv run ruff check sheetbench_runner/ tests/
 
-lt:
-	uv run ruff check sheetbench_runner/ tests/
+lt: lint typecheck
+
+typecheck:
 	uv run mypy sheetbench_runner/
 
 install:
 	uv build
 	pip install --user --force-reinstall dist/*.whl
+
+test_%:
+	uv run pytest --tb=short -vs -k $@ tests/
