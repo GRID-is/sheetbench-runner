@@ -60,12 +60,6 @@ def load_task_ids_from_file(file_path: Path) -> set[str]:
     help="File with task IDs to run (one per line)",
 )
 @click.option(
-    "--exclude-file",
-    type=click.Path(exists=True, path_type=Path),
-    default=None,
-    help="File with task IDs to exclude (one per line)",
-)
-@click.option(
     "--config",
     type=click.Path(exists=True, path_type=Path),
     default=None,
@@ -99,7 +93,6 @@ async def cli(
     run_dir: Path,
     task_ids: str | None,
     task_file: Path | None,
-    exclude_file: Path | None,
     config: Path | None,
     infuser_url: str | None,
     concurrency: int | None,
@@ -131,19 +124,8 @@ async def cli(
     elif task_file:
         filter_ids = load_task_ids_from_file(task_file)
 
-    # Determine exclusions
-    exclude_ids: set[str] | None = None
-    if exclude_file:
-        exclude_ids = load_task_ids_from_file(exclude_file)
-    else:
-        # Default: use excluded_vba_tasks.txt if it exists in dataset
-        exclude_ids = ds.get_excluded_task_ids()
-
-    if exclude_ids:
-        logger.info(f"Excluding {len(exclude_ids)} tasks")
-
     # Filter tasks
-    tasks = ds.filter_tasks(task_ids=filter_ids, exclude_ids=exclude_ids)
+    tasks = ds.filter_tasks(task_ids=filter_ids)
 
     if not tasks:
         logger.error("No tasks to run after filtering")
