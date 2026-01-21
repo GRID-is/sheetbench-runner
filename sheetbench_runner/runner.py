@@ -77,36 +77,35 @@ class TaskRunner:
         """
         self._stats = RunStats(total_tasks=len(tasks))
 
-        # Filter out already-completed tasks
+        # Split into pending vs already-completed
         pending_tasks = [t for t in tasks if not self._run_dir.is_completed(t.id)]
         self._stats.skipped = len(tasks) - len(pending_tasks)
-        self._stats.completed = self._stats.skipped
 
         if self._stats.skipped > 0:
-            logger.info(f"Skipping {self._stats.skipped} already-completed tasks")
+            logger.info(f"Resuming: {self._stats.skipped} tasks already completed")
 
-        if not pending_tasks:
+        # Run pending tasks in parallel
+        if pending_tasks:
+            concurrency = self._semaphore._value
+            logger.info(f"Running {len(pending_tasks)} tasks with concurrency={concurrency}")
+            await asyncio.gather(
+                *[self._run_task_safe(task) for task in pending_tasks],
+                return_exceptions=False,  # Exceptions are handled in _run_task_safe
+            )
+        else:
             logger.info("No tasks to run (all already completed)")
-            return self._stats
 
-        logger.info(f"Running {len(pending_tasks)} tasks with concurrency={self._semaphore._value}")
-
-        # Run tasks in parallel
-        results = await asyncio.gather(
-            *[self._run_task_safe(task) for task in pending_tasks],
-            return_exceptions=False,  # Exceptions are handled in _run_task_safe
-        )
-
-        # Update stats from results
-        for result in results:
-            if result.status == TaskStatus.EVALUATED:
-                self._stats.completed += 1
-                if result.result == "pass":
-                    self._stats.passed += 1
-                else:
-                    self._stats.failed += 1
-            elif result.status == TaskStatus.FAILED:
+        # Accumulate stats uniformly from all tasks
+        for task in tasks:
+            result = self._run_dir.get_result(task.id)
+            if result is None:
                 self._stats.errors += 1
+            elif result.get("result") == "pass":
+                self._stats.passed += 1
+                self._stats.completed += 1
+            elif result.get("result") == "fail":
+                self._stats.failed += 1
+                self._stats.completed += 1
 
         return self._stats
 

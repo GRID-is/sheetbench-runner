@@ -176,6 +176,50 @@ def test_get_output_path(temp_dir: Path):
     assert output_path == temp_dir / "run" / "13-1-output.xlsx"
 
 
+def test_get_result_returns_result_dict(temp_dir: Path):
+    """get_result() returns the result dict for a completed task."""
+    # Arrange
+    run_path = temp_dir / "get-result-test"
+    run_path.mkdir()
+
+    results = [
+        {"task_id": "13-1", "result": "pass", "duration_seconds": 45.0},
+        {"task_id": "17-35", "result": "fail", "duration_seconds": 30.0},
+    ]
+    with open(run_path / "results.json", "w") as f:
+        json.dump(results, f)
+
+    run_dir = RunDirectory(run_path)
+    run_dir.load()
+
+    # Act
+    result = run_dir.get_result("13-1")
+
+    # Assert
+    assert result is not None
+    assert result["task_id"] == "13-1"
+    assert result["result"] == "pass"
+
+
+def test_get_result_returns_none_for_missing(temp_dir: Path):
+    """get_result() returns None for tasks not in results."""
+    # Arrange
+    run_path = temp_dir / "get-result-missing"
+    run_path.mkdir()
+
+    with open(run_path / "results.json", "w") as f:
+        json.dump([], f)
+
+    run_dir = RunDirectory(run_path)
+    run_dir.load()
+
+    # Act
+    result = run_dir.get_result("99-99")
+
+    # Assert
+    assert result is None
+
+
 def test_create_preserves_existing_results(temp_dir: Path):
     """create() must not overwrite existing results.json."""
     # Arrange - directory with results.json but no run.json
