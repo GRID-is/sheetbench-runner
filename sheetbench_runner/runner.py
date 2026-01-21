@@ -236,25 +236,28 @@ async def run(
     # Create run.json if missing
     if not run_dir.run_json_path.exists():
         logger.info(f"Creating run metadata at {run_dir_path}")
-        # Get model info from infuser
+        # Get status from infuser - all fields go into infuser_config
         async with InfuserClient(infuser_url, timeout_seconds) as infuser:
             try:
                 status = await infuser.get_status()
                 model_val = status.get("default_model", "unknown")
                 model = str(model_val) if model_val else "unknown"
-                # Merge status info into infuser_config
-                config: dict[str, object] = {**infuser_config}
-                if "git_hash" not in config:
-                    config["git_hash"] = status.get("version", "unknown")
+                git_hash_val = status.get("version", "unknown")
+                git_hash = str(git_hash_val) if git_hash_val else "unknown"
+                # Merge all status fields into infuser_config
+                config: dict[str, object] = {**status, **infuser_config}
             except Exception as e:
                 logger.warning(f"Could not get infuser status: {e}")
                 model_from_config = infuser_config.get("model", "unknown")
                 model = str(model_from_config) if model_from_config else "unknown"
+                git_hash = str(infuser_config.get("git_hash", "unknown"))
                 config = dict(infuser_config)
 
         metadata = RunMetadata(
             model=model,
+            git_hash=git_hash,
             infuser_config=config,
+            notes=run_dir_path.name,
         )
         run_dir.create(metadata)
 
