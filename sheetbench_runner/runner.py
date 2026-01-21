@@ -235,7 +235,7 @@ async def run(
     run_dir = RunDirectory(run_dir_path)
 
     # Create or resume run directory
-    if run_dir.exists():
+    if run_dir.run_json_path.exists():
         logger.info(f"Resuming run from {run_dir_path}")
         run_dir.load()
     else:
