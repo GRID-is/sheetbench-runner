@@ -1,0 +1,18 @@
+# SheetBench Runner Configuration
+# Copy to config.toml and adjust as needed
+
+[infuser]
+url = "http://localhost:3000"
+
+# Arbitrary metadata about the infuser configuration
+# Stored in run.json for reproducibility tracking
+[infuser.config]
+git_hash = "abc1234"
+model = "claude-sonnet-4-5"
+planning_enabled = false
+max_turns = 50
+# Add any other relevant configuration keys here
+
+[runner]
+concurrency = 4           # Number of parallel tasks
+timeout_seconds = 3600    # 1 hour timeout per task

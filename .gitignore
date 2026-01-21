@@ -1,0 +1,6 @@
+__pycache__
+*.sw?
+coverage.xml
+.coverage
+secrets
+.idea/**/*.*
