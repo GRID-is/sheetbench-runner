@@ -151,6 +151,7 @@ class RunMetadata:
     """Metadata about a test run, stored in run.json."""
 
     model: str
+    git_hash: str
     infuser_config: dict[str, Any]
     test_set: int | None = None
     notes: str = ""
@@ -160,6 +161,7 @@ class RunMetadata:
         """Convert to run.json format."""
         return {
             "model": self.model,
+            "git_hash": self.git_hash,
             "infuser_config": self.infuser_config,
             "test_set": self.test_set,
             "notes": self.notes,
@@ -176,6 +178,7 @@ class RunMetadata:
 
         return cls(
             model=data.get("model", "unknown"),
+            git_hash=data.get("git_hash", "unknown"),
             infuser_config=data.get("infuser_config", {}),
             test_set=data.get("test_set"),
             notes=data.get("notes", ""),

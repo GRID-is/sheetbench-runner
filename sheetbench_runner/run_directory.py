@@ -90,6 +90,10 @@ class RunDirectory:
         """Get the number of completed tasks."""
         return len(self._completed_task_ids)
 
+    def get_result(self, task_id: str) -> dict[str, Any] | None:
+        """Get the result dict for a task, or None if not found."""
+        return self._results.get(task_id)
+
     def record_result(self, result: TaskResult) -> None:
         """
         Record a task result to results.json.

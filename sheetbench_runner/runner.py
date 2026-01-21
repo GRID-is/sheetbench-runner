@@ -77,36 +77,35 @@ class TaskRunner:
         """
         self._stats = RunStats(total_tasks=len(tasks))
 
-        # Filter out already-completed tasks
+        # Split into pending vs already-completed
         pending_tasks = [t for t in tasks if not self._run_dir.is_completed(t.id)]
         self._stats.skipped = len(tasks) - len(pending_tasks)
-        self._stats.completed = self._stats.skipped
 
         if self._stats.skipped > 0:
-            logger.info(f"Skipping {self._stats.skipped} already-completed tasks")
+            logger.info(f"Resuming: {self._stats.skipped} tasks already completed")
 
-        if not pending_tasks:
+        # Run pending tasks in parallel
+        if pending_tasks:
+            concurrency = self._semaphore._value
+            logger.info(f"Running {len(pending_tasks)} tasks with concurrency={concurrency}")
+            await asyncio.gather(
+                *[self._run_task_safe(task) for task in pending_tasks],
+                return_exceptions=False,  # Exceptions are handled in _run_task_safe
+            )
+        else:
             logger.info("No tasks to run (all already completed)")
-            return self._stats
 
-        logger.info(f"Running {len(pending_tasks)} tasks with concurrency={self._semaphore._value}")
-
-        # Run tasks in parallel
-        results = await asyncio.gather(
-            *[self._run_task_safe(task) for task in pending_tasks],
-            return_exceptions=False,  # Exceptions are handled in _run_task_safe
-        )
-
-        # Update stats from results
-        for result in results:
-            if result.status == TaskStatus.EVALUATED:
-                self._stats.completed += 1
-                if result.result == "pass":
-                    self._stats.passed += 1
-                else:
-                    self._stats.failed += 1
-            elif result.status == TaskStatus.FAILED:
+        # Accumulate stats uniformly from all tasks
+        for task in tasks:
+            result = self._run_dir.get_result(task.id)
+            if result is None:
                 self._stats.errors += 1
+            elif result.get("result") == "pass":
+                self._stats.passed += 1
+                self._stats.completed += 1
+            elif result.get("result") == "fail":
+                self._stats.failed += 1
+                self._stats.completed += 1
 
         return self._stats
 
@@ -237,25 +236,28 @@ async def run(
     # Create run.json if missing
     if not run_dir.run_json_path.exists():
         logger.info(f"Creating run metadata at {run_dir_path}")
-        # Get model info from infuser
+        # Get status from infuser - all fields go into infuser_config
         async with InfuserClient(infuser_url, timeout_seconds) as infuser:
             try:
                 status = await infuser.get_status()
                 model_val = status.get("default_model", "unknown")
                 model = str(model_val) if model_val else "unknown"
-                # Merge status info into infuser_config
-                config: dict[str, object] = {**infuser_config}
-                if "git_hash" not in config:
-                    config["git_hash"] = status.get("version", "unknown")
+                git_hash_val = status.get("version", "unknown")
+                git_hash = str(git_hash_val) if git_hash_val else "unknown"
+                # Merge all status fields into infuser_config
+                config: dict[str, object] = {**status, **infuser_config}
             except Exception as e:
                 logger.warning(f"Could not get infuser status: {e}")
                 model_from_config = infuser_config.get("model", "unknown")
                 model = str(model_from_config) if model_from_config else "unknown"
+                git_hash = str(infuser_config.get("git_hash", "unknown"))
                 config = dict(infuser_config)
 
         metadata = RunMetadata(
             model=model,
+            git_hash=git_hash,
             infuser_config=config,
+            notes=run_dir_path.name,
         )
         run_dir.create(metadata)
 
