@@ -76,11 +76,6 @@ def sample_dataset_dir(temp_dir: Path) -> Path:
     with open(dataset_dir / "dataset.json", "w") as f:
         json.dump(dataset, f)
 
-    # Create excluded_vba_tasks.txt
-    with open(dataset_dir / "excluded_vba_tasks.txt", "w") as f:
-        f.write("# VBA tasks to exclude\n")
-        f.write("vba-task\n")
-
     return dataset_dir
 
 

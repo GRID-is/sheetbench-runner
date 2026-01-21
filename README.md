@@ -23,7 +23,6 @@ Options:
                          resumes if exists)  [required]
   --task-ids TEXT        Comma-separated list of specific task IDs to run
   --task-file PATH       File with task IDs to run (one per line)
-  --exclude-file PATH    File with task IDs to exclude (one per line)
   --config PATH          Path to config.toml file
   --infuser-url TEXT     Override infuser URL from config
   --concurrency INTEGER  Number of parallel tasks (default: 4)
