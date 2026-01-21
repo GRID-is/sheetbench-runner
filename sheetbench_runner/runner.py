@@ -172,23 +172,26 @@ class TaskRunner:
                 result.status = TaskStatus.COMPLETED
 
                 # Evaluate
-                if output_file:
-                    eval_result = self._evaluator.evaluate(
-                        task, self._run_dir.path / output_file
-                    )
-                    result.result = "pass" if eval_result.passed else "fail"
-                    result.message = eval_result.message
-                    result.status = TaskStatus.EVALUATED
+                if not output_file:
+                    # No output file = infrastructure failure, not evaluation failure
+                    # Don't record - should be retried on resume
+                    result.status = TaskStatus.FAILED
+                    result.error = "No output file produced"
+                    logger.warning(f"Task {task.id}: No output file (will retry)")
+                    return result
 
-                    status_str = "PASS" if eval_result.passed else "FAIL"
-                    logger.info(f"Task {task.id}: {status_str} ({duration:.1f}s)")
-                else:
-                    result.result = "fail"
-                    result.message = "No output file produced"
-                    result.status = TaskStatus.EVALUATED
-                    logger.warning(f"Task {task.id}: No output file")
+                # Evaluate
+                eval_result = self._evaluator.evaluate(
+                    task, self._run_dir.path / output_file
+                )
+                result.result = "pass" if eval_result.passed else "fail"
+                result.message = eval_result.message
+                result.status = TaskStatus.EVALUATED
 
-                # Record result
+                status_str = "PASS" if eval_result.passed else "FAIL"
+                logger.info(f"Task {task.id}: {status_str} ({duration:.1f}s)")
+
+                # Record result - only for actually evaluated tasks
                 self._run_dir.record_result(result)
                 return result
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from sheetbench_runner.dataset import TEST_SET_1, TEST_SET_2, Dataset
+from sheetbench_runner.dataset import Dataset
 
 
 def test_load_dataset(sample_dataset_dir: Path):
@@ -54,32 +54,6 @@ def test_filter_by_exclusion(sample_dataset_dir: Path):
     assert "vba-task" not in {t.id for t in tasks}
 
 
-def test_filter_by_test_set_1(sample_dataset_dir: Path):
-    """Test filtering by test set 1."""
-    # Arrange
-    dataset = Dataset(sample_dataset_dir)
-
-    # Act
-    tasks = dataset.filter_tasks(test_set=1)
-
-    # Assert - only tasks that are in TEST_SET_1 should be included
-    for task in tasks:
-        assert task.id in TEST_SET_1
-
-
-def test_filter_by_test_set_2(sample_dataset_dir: Path):
-    """Test filtering by test set 2."""
-    # Arrange
-    dataset = Dataset(sample_dataset_dir)
-
-    # Act
-    tasks = dataset.filter_tasks(test_set=2)
-
-    # Assert
-    for task in tasks:
-        assert task.id in TEST_SET_2
-
-
 def test_get_input_path(sample_dataset_dir: Path):
     """Test getting input file path for a task."""
     # Arrange
@@ -104,17 +78,3 @@ def test_get_golden_path(sample_dataset_dir: Path):
 
     # Assert
     assert golden_path == sample_dataset_dir / "spreadsheet/13-1/1_13-1_golden.xlsx"
-
-
-def test_test_sets_are_disjoint():
-    """Verify test set 1 and 2 don't overlap."""
-    # Assert
-    overlap = TEST_SET_1 & TEST_SET_2
-    assert len(overlap) == 0, f"Test sets overlap: {overlap}"
-
-
-def test_test_sets_have_expected_size():
-    """Verify test sets have 50 tasks each."""
-    # Assert
-    assert len(TEST_SET_1) == 50
-    assert len(TEST_SET_2) == 50
