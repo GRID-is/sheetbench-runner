@@ -55,9 +55,10 @@ class RunDirectory:
         with open(self.run_json_path, "w") as f:
             json.dump(metadata.to_dict(), f, indent=2)
 
-        # Initialize empty results.json
-        with open(self.results_path, "w") as f:
-            json.dump([], f)
+        # Initialize results.json only if it doesn't exist
+        if not self.results_path.exists():
+            with open(self.results_path, "w") as f:
+                json.dump([], f)
 
     def load(self) -> None:
         """

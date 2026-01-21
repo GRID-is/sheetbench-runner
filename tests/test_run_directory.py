@@ -174,3 +174,30 @@ def test_get_output_path(temp_dir: Path):
 
     # Assert
     assert output_path == temp_dir / "run" / "13-1-output.xlsx"
+
+
+def test_create_preserves_existing_results(temp_dir: Path):
+    """create() must not overwrite existing results.json."""
+    # Arrange - directory with results.json but no run.json
+    run_path = temp_dir / "partial-run"
+    run_path.mkdir()
+
+    existing_results = [
+        {"task_id": "13-1", "result": "pass", "duration_seconds": 45.0},
+        {"task_id": "17-35", "result": "fail", "duration_seconds": 30.0},
+    ]
+    with open(run_path / "results.json", "w") as f:
+        json.dump(existing_results, f)
+
+    run_dir = RunDirectory(run_path)
+    metadata = RunMetadata(model="test-model", infuser_config={})
+
+    # Act - create run.json (results.json already exists)
+    run_dir.create(metadata)
+
+    # Assert - results.json must NOT be wiped
+    with open(run_path / "results.json") as f:
+        results = json.load(f)
+    assert len(results) == 2
+    assert results[0]["task_id"] == "13-1"
+    assert results[1]["task_id"] == "17-35"
