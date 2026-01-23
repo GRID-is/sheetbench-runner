@@ -122,6 +122,40 @@ def _generate_cell_names(range_str: str) -> list[str]:
     return [f"{col}{row}" for col in columns for row in range(start_row, end_row + 1)]
 
 
+def _split_on_comma_outside_quotes(s: str) -> list[str]:
+    """
+    Split a string on commas, but only when they are outside quoted sections.
+
+    Handles both single and double quotes. Quotes inside the string are expected
+    to be balanced (e.g., "'Sheet, Name'!A1" has balanced single quotes).
+
+    Examples:
+        "A1,B2" -> ["A1", "B2"]
+        "'a, b'!A1,Sheet2!B2" -> ["'a, b'!A1", "Sheet2!B2"]
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    in_single_quote = False
+    in_double_quote = False
+
+    for char in s:
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            current.append(char)
+        elif char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            current.append(char)
+        elif char == "," and not in_single_quote and not in_double_quote:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+
+    # Don't forget the last part
+    parts.append("".join(current))
+    return parts
+
+
 def _parse_sheet_cell_ranges(
     answer_position: str,
     answer_sheet: str | None = None,
@@ -133,15 +167,15 @@ def _parse_sheet_cell_ranges(
     Args:
         answer_position: The answer position string, potentially with multiple
             comma-separated ranges and optional sheet names (e.g., "Sheet1!A1:B10").
+            Sheet names may contain commas if quoted (e.g., "'Sales, Q1'!A1").
         answer_sheet: Optional answer_sheet field from the task.
         fallback_sheet_name: Sheet name to use if none specified.
 
     Returns:
         List of (sheet_name, cell_range) tuples.
     """
-    # BUG: This naive split breaks on sheet names containing commas
-    # e.g., "'a, b, c'!A1:B10" splits into ["'a", " b", " c'!A1:B10"]
-    sheet_cell_ranges = answer_position.split(",")
+    # Split on commas, but respect quoted sheet names
+    sheet_cell_ranges = _split_on_comma_outside_quotes(answer_position)
     result: list[tuple[str, str]] = []
 
     for sheet_cell_range in sheet_cell_ranges:
@@ -150,12 +184,34 @@ def _parse_sheet_cell_ranges(
         # Determine sheet name
         if "!" in sheet_cell_range:
             # Sheet name embedded in answer_position (e.g., "Sheet1!A1:B10")
-            sheet_name, cell_range = sheet_cell_range.split("!")
-            sheet_name = sheet_name.strip("'\"")
+            # Find the ! that separates sheet name from cell range
+            # Must handle quoted sheet names like "'Sheet, Name'!A1"
+            if sheet_cell_range.startswith("'"):
+                # Find closing quote, then !
+                end_quote = sheet_cell_range.find("'", 1)
+                if end_quote != -1 and end_quote + 1 < len(sheet_cell_range):
+                    sheet_name = sheet_cell_range[1:end_quote]  # Strip quotes
+                    cell_range = sheet_cell_range[end_quote + 2:]  # Skip '!
+                else:
+                    # Malformed, fall back to simple split
+                    sheet_name, cell_range = sheet_cell_range.split("!", 1)
+                    sheet_name = sheet_name.strip("'\"")
+            elif sheet_cell_range.startswith('"'):
+                # Find closing quote, then !
+                end_quote = sheet_cell_range.find('"', 1)
+                if end_quote != -1 and end_quote + 1 < len(sheet_cell_range):
+                    sheet_name = sheet_cell_range[1:end_quote]  # Strip quotes
+                    cell_range = sheet_cell_range[end_quote + 2:]  # Skip "!
+                else:
+                    sheet_name, cell_range = sheet_cell_range.split("!", 1)
+                    sheet_name = sheet_name.strip("'\"")
+            else:
+                # Simple unquoted sheet name
+                sheet_name, cell_range = sheet_cell_range.split("!", 1)
+                sheet_name = sheet_name.strip("'\"")
         elif answer_sheet:
-            # Use answer_sheet field (may be comma-separated, use first)
-            # BUG: This also breaks on sheet names with commas
-            sheet_name = answer_sheet.split(",")[0].strip().strip("'\"")
+            # Use answer_sheet field - strip quotes but don't split on comma
+            sheet_name = answer_sheet.strip().strip("'\"")
             cell_range = sheet_cell_range
         elif fallback_sheet_name:
             sheet_name = fallback_sheet_name

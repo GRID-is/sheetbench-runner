@@ -165,65 +165,40 @@ class TestParseSheetCellRanges:
         assert result == [("DefaultSheet", "A1:B10")]
 
     # ============================================================
-    # BUG CONFIRMATION TESTS
-    # These tests demonstrate the comma-in-sheet-name bug.
-    # They specify the EXPECTED (correct) behavior, but will FAIL
-    # because the current implementation incorrectly splits on commas.
+    # Tests for sheet names containing commas
+    # These verify that quoted sheet names with commas are parsed correctly.
     # ============================================================
 
-    def test_sheet_name_with_single_comma_BUGGY(self):
-        """
-        BUG: Sheet names containing commas are incorrectly split.
-
-        Input: "'a, b'!A1:B10"
-        Expected: [("a, b", "A1:B10")]
-        Actual (buggy): Splits into ["'a", " b'!A1:B10"] causing parse errors
-        """
+    def test_sheet_name_with_single_comma(self):
+        """Sheet names with commas are correctly parsed when quoted."""
         # Arrange & Act
         result = _parse_sheet_cell_ranges("'a, b'!A1:B10")
 
-        # Assert - This is the CORRECT expected behavior
+        # Assert
         assert result == [("a, b", "A1:B10")]
 
-    def test_sheet_name_with_multiple_commas_BUGGY(self):
-        """
-        BUG: Sheet names with multiple commas are incorrectly split.
-
-        Input: "'a, b, c'!A1"
-        Expected: [("a, b, c", "A1")]
-        Actual (buggy): Splits into ["'a", " b", " c'!A1"]
-        """
+    def test_sheet_name_with_multiple_commas(self):
+        """Sheet names with multiple commas are correctly parsed when quoted."""
         # Arrange & Act
         result = _parse_sheet_cell_ranges("'a, b, c'!A1")
 
-        # Assert - This is the CORRECT expected behavior
+        # Assert
         assert result == [("a, b, c", "A1")]
 
-    def test_multiple_ranges_with_comma_in_sheet_name_BUGGY(self):
-        """
-        BUG: Multiple ranges where one sheet name contains a comma.
-
-        Input: "'Sales, Q1'!A1,Sheet2!B2"
-        Expected: [("Sales, Q1", "A1"), ("Sheet2", "B2")]
-        Actual (buggy): Incorrectly splits the first sheet name
-        """
+    def test_multiple_ranges_with_comma_in_sheet_name(self):
+        """Multiple ranges where one sheet name contains a comma."""
         # Arrange & Act
         result = _parse_sheet_cell_ranges("'Sales, Q1'!A1,Sheet2!B2")
 
-        # Assert - This is the CORRECT expected behavior
+        # Assert
         assert result == [("Sales, Q1", "A1"), ("Sheet2", "B2")]
 
-    def test_answer_sheet_with_comma_BUGGY(self):
-        """
-        BUG: answer_sheet field containing comma is incorrectly split.
-
-        When answer_sheet is "'Revenue, 2024'" and position is "A1:B10",
-        it should use the full sheet name, not split on comma.
-        """
+    def test_answer_sheet_with_comma(self):
+        """answer_sheet field with comma in name is handled correctly."""
         # Arrange & Act
         result = _parse_sheet_cell_ranges("A1:B10", answer_sheet="'Revenue, 2024'")
 
-        # Assert - This is the CORRECT expected behavior
+        # Assert
         assert result == [("Revenue, 2024", "A1:B10")]
 
 
