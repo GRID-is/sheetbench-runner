@@ -201,6 +201,59 @@ class TestParseSheetCellRanges:
         # Assert
         assert result == [("Revenue, 2024", "A1:B10")]
 
+    # ============================================================
+    # Tests for malformed quotes (missing opening quote)
+    # These occur in real datasets and need repair.
+    # ============================================================
+
+    def test_missing_opening_quote_first_range(self):
+        """First range missing opening quote, second is correct."""
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("Sheet3'!A:G,'Sheet4'!A:G")
+
+        # Assert
+        assert result == [("Sheet3", "A:G"), ("Sheet4", "A:G")]
+
+    def test_missing_opening_quotes_multiple_ranges(self):
+        """Multiple ranges with missing opening quotes, one unquoted."""
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges(
+            "SOME SHEET'!A2:C100,'OTHER SHEET'!AB44,EXTRA!C5:D5"
+        )
+
+        # Assert
+        assert result == [
+            ("SOME SHEET", "A2:C100"),
+            ("OTHER SHEET", "AB44"),
+            ("EXTRA", "C5:D5"),
+        ]
+
+    def test_quotes_around_entire_reference(self):
+        """Quotes wrapping entire reference instead of just sheet name."""
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("'9045!A1:F9','34354!A1:F1'")
+
+        # Assert
+        assert result == [("9045", "A1:F9"), ("34354", "A1:F1")]
+
+    def test_external_workbook_reference(self):
+        """External workbook reference with quoted sheet name."""
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("[workbook2.xlsx]'sheet 2'!B4")
+
+        # Assert
+        assert result == [("[workbook2.xlsx]sheet 2", "B4")]
+
+    # ============================================================
+    # Error cases
+    # ============================================================
+
+    def test_no_sheet_name_raises_error(self):
+        """Raises ValueError when no sheet name is available."""
+        # Arrange & Act & Assert
+        with pytest.raises(ValueError, match="No sheet name available"):
+            _parse_sheet_cell_ranges("A1:B10")
+
 
 @pytest.fixture
 def evaluator_setup(temp_dir: Path):
