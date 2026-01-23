@@ -122,6 +122,53 @@ def _generate_cell_names(range_str: str) -> list[str]:
     return [f"{col}{row}" for col in columns for row in range(start_row, end_row + 1)]
 
 
+def _parse_sheet_cell_ranges(
+    answer_position: str,
+    answer_sheet: str | None = None,
+    fallback_sheet_name: str | None = None,
+) -> list[tuple[str, str]]:
+    """
+    Parse answer_position into a list of (sheet_name, cell_range) tuples.
+
+    Args:
+        answer_position: The answer position string, potentially with multiple
+            comma-separated ranges and optional sheet names (e.g., "Sheet1!A1:B10").
+        answer_sheet: Optional answer_sheet field from the task.
+        fallback_sheet_name: Sheet name to use if none specified.
+
+    Returns:
+        List of (sheet_name, cell_range) tuples.
+    """
+    # BUG: This naive split breaks on sheet names containing commas
+    # e.g., "'a, b, c'!A1:B10" splits into ["'a", " b", " c'!A1:B10"]
+    sheet_cell_ranges = answer_position.split(",")
+    result: list[tuple[str, str]] = []
+
+    for sheet_cell_range in sheet_cell_ranges:
+        sheet_cell_range = sheet_cell_range.strip()
+
+        # Determine sheet name
+        if "!" in sheet_cell_range:
+            # Sheet name embedded in answer_position (e.g., "Sheet1!A1:B10")
+            sheet_name, cell_range = sheet_cell_range.split("!")
+            sheet_name = sheet_name.strip("'\"")
+        elif answer_sheet:
+            # Use answer_sheet field (may be comma-separated, use first)
+            # BUG: This also breaks on sheet names with commas
+            sheet_name = answer_sheet.split(",")[0].strip().strip("'\"")
+            cell_range = sheet_cell_range
+        elif fallback_sheet_name:
+            sheet_name = fallback_sheet_name
+            cell_range = sheet_cell_range
+        else:
+            raise ValueError("No sheet name available")
+
+        cell_range = cell_range.strip("'\"")
+        result.append((sheet_name, cell_range))
+
+    return result
+
+
 def _compare_cells(
     wb_golden: openpyxl.Workbook,
     wb_output: openpyxl.Workbook,
@@ -205,30 +252,16 @@ class Evaluator:
         wb_golden = openpyxl.load_workbook(filename=golden_path, data_only=True)
         wb_output = openpyxl.load_workbook(filename=output_path, data_only=True)
 
-        # answer_position can be comma-separated for multiple ranges
-        sheet_cell_ranges = task.answer_position.split(",")
         all_passed = True
         messages: list[str] = []
 
-        for sheet_cell_range in sheet_cell_ranges:
-            sheet_cell_range = sheet_cell_range.strip()
+        parsed_ranges = _parse_sheet_cell_ranges(
+            task.answer_position,
+            task.answer_sheet,
+            wb_golden.sheetnames[0],
+        )
 
-            # Determine sheet name
-            if "!" in sheet_cell_range:
-                # Sheet name embedded in answer_position (e.g., "Sheet1!A1:B10")
-                sheet_name, cell_range = sheet_cell_range.split("!")
-                sheet_name = sheet_name.strip("'\"")
-            elif task.answer_sheet:
-                # Use answer_sheet field (may be comma-separated, use first)
-                sheet_name = task.answer_sheet.split(",")[0].strip().strip("'\"")
-                cell_range = sheet_cell_range
-            else:
-                # Fall back to first sheet in golden workbook
-                sheet_name = wb_golden.sheetnames[0]
-                cell_range = sheet_cell_range
-
-            cell_range = cell_range.strip("'\"")
-
+        for sheet_name, cell_range in parsed_ranges:
             passed, message = _compare_cells(wb_golden, wb_output, sheet_name, cell_range)
             if not passed:
                 all_passed = False
