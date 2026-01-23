@@ -1,7 +1,7 @@
 .PHONY: test lint lt install
 
 test:
-	uv run pytest tests/ -v
+	uv run pytest tests/ -v --cov=sheetbench_runner --cov-report=term-missing
 
 lint:
 	uv run ruff check sheetbench_runner/ tests/
