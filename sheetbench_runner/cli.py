@@ -88,6 +88,11 @@ def load_task_ids_from_file(file_path: Path) -> set[str]:
     is_flag=True,
     help="Enable verbose logging",
 )
+@click.option(
+    "--reevaluate",
+    is_flag=True,
+    help="Re-evaluate all tasks that have output files (useful after parser fixes)",
+)
 async def cli(
     dataset: Path,
     run_dir: Path,
@@ -98,6 +103,7 @@ async def cli(
     concurrency: int | None,
     timeout: int | None,
     verbose: bool,
+    reevaluate: bool,
 ) -> None:
     """Parallel inference runner for SpreadsheetBench with inline evaluation."""
     setup_logging(verbose)
@@ -142,6 +148,7 @@ async def cli(
         tasks=tasks,
         concurrency=cfg.concurrency,
         timeout_seconds=cfg.timeout_seconds,
+        reevaluate=reevaluate,
     )
 
     # Print summary
