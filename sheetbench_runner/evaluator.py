@@ -6,10 +6,12 @@ comparison logic to ensure compatible results.
 """
 
 import datetime
+import re
 from pathlib import Path
 from typing import Any
 
 import openpyxl
+from openpyxl.utils.cell import SHEETRANGE_RE
 
 from .entities import EvaluationResult, Task
 
@@ -122,6 +124,128 @@ def _generate_cell_names(range_str: str) -> list[str]:
     return [f"{col}{row}" for col in columns for row in range(start_row, end_row + 1)]
 
 
+def _repair_unbalanced_quotes(s: str) -> str:
+    """
+    Attempt to repair common quote issues in Excel range strings.
+
+    Handles cases like:
+    - "Sheet Name'!A1" -> "'Sheet Name'!A1" (missing opening quote)
+    - "'9045!A1:F9'" -> "'9045'!A1:F9" (quote wrapping entire reference)
+    """
+    # Count unescaped quotes (escaped = doubled '')
+    quote_count = s.count("'") - s.count("''") * 2
+    if quote_count % 2 == 0:
+        return s  # Balanced, no repair needed
+
+    # Pattern 1: Missing opening quote before sheet name
+    # Must match at segment boundary (start of string or after comma)
+    # "SOME SHEET'!A1" -> "'SOME SHEET'!A1"
+    # Captures: (boundary)(sheet_name)('!)
+    s = re.sub(r"(^|,\s*)([A-Za-z0-9][A-Za-z0-9 ]*)'!", r"\1'\2'!", s)
+
+    return s
+
+
+def _split_on_comma_outside_quotes(s: str) -> list[str]:
+    """
+    Split a string on commas, but only when they are outside quoted sections.
+
+    Handles both single and double quotes. Quotes inside the string are expected
+    to be balanced (e.g., "'Sheet, Name'!A1" has balanced single quotes).
+
+    Examples:
+        "A1,B2" -> ["A1", "B2"]
+        "'a, b'!A1,Sheet2!B2" -> ["'a, b'!A1", "Sheet2!B2"]
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    in_single_quote = False
+    in_double_quote = False
+
+    for char in s:
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            current.append(char)
+        elif char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            current.append(char)
+        elif char == "," and not in_single_quote and not in_double_quote:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+
+    # Don't forget the last part
+    parts.append("".join(current))
+    return parts
+
+
+def _parse_sheet_cell_ranges(
+    answer_position: str,
+    answer_sheet: str | None = None,
+    fallback_sheet_name: str | None = None,
+) -> list[tuple[str, str]]:
+    """
+    Parse answer_position into a list of (sheet_name, cell_range) tuples.
+
+    Args:
+        answer_position: The answer position string, potentially with multiple
+            comma-separated ranges and optional sheet names (e.g., "Sheet1!A1:B10").
+            Sheet names may contain commas if quoted (e.g., "'Sales, Q1'!A1").
+            Handles malformed quotes (missing opening quote) via repair.
+        answer_sheet: Optional answer_sheet field from the task.
+        fallback_sheet_name: Sheet name to use if none specified.
+
+    Returns:
+        List of (sheet_name, cell_range) tuples.
+    """
+    # Repair common quote issues before parsing
+    answer_position = _repair_unbalanced_quotes(answer_position)
+
+    # Split on commas, but respect quoted sheet names
+    sheet_cell_ranges = _split_on_comma_outside_quotes(answer_position)
+    result: list[tuple[str, str]] = []
+
+    for part in sheet_cell_ranges:
+        part = part.strip()
+
+        if "!" in part:
+            # Try parsing with openpyxl's regex first
+            match = SHEETRANGE_RE.match(part)
+            if match:
+                sheet_name = match.group("quoted") or match.group("notquoted")
+                # Unescape doubled quotes
+                sheet_name = sheet_name.replace("''", "'")
+                cell_range = match.group("cells")
+            else:
+                # Fallback: handle edge cases like external workbook refs
+                # "[workbook.xlsx]'sheet'!A1" or malformed input
+                sheet_name, cell_range = part.rsplit("!", 1)
+                # Handle external ref: "[book.xlsx]'sheet'" -> "[book.xlsx]sheet"
+                if sheet_name.startswith("[") and "'" in sheet_name:
+                    # Strip quotes from sheet name portion after the ]
+                    bracket_end = sheet_name.find("]")
+                    if bracket_end != -1:
+                        prefix = sheet_name[: bracket_end + 1]
+                        suffix = sheet_name[bracket_end + 1 :].strip("'\"")
+                        sheet_name = prefix + suffix
+                else:
+                    sheet_name = sheet_name.strip("'\"")
+        elif answer_sheet:
+            sheet_name = answer_sheet.strip().strip("'\"")
+            cell_range = part
+        elif fallback_sheet_name:
+            sheet_name = fallback_sheet_name
+            cell_range = part
+        else:
+            raise ValueError("No sheet name available")
+
+        cell_range = cell_range.strip("'\"")
+        result.append((sheet_name, cell_range))
+
+    return result
+
+
 def _compare_cells(
     wb_golden: openpyxl.Workbook,
     wb_output: openpyxl.Workbook,
@@ -205,30 +329,16 @@ class Evaluator:
         wb_golden = openpyxl.load_workbook(filename=golden_path, data_only=True)
         wb_output = openpyxl.load_workbook(filename=output_path, data_only=True)
 
-        # answer_position can be comma-separated for multiple ranges
-        sheet_cell_ranges = task.answer_position.split(",")
         all_passed = True
         messages: list[str] = []
 
-        for sheet_cell_range in sheet_cell_ranges:
-            sheet_cell_range = sheet_cell_range.strip()
+        parsed_ranges = _parse_sheet_cell_ranges(
+            task.answer_position,
+            task.answer_sheet,
+            wb_golden.sheetnames[0],
+        )
 
-            # Determine sheet name
-            if "!" in sheet_cell_range:
-                # Sheet name embedded in answer_position (e.g., "Sheet1!A1:B10")
-                sheet_name, cell_range = sheet_cell_range.split("!")
-                sheet_name = sheet_name.strip("'\"")
-            elif task.answer_sheet:
-                # Use answer_sheet field (may be comma-separated, use first)
-                sheet_name = task.answer_sheet.split(",")[0].strip().strip("'\"")
-                cell_range = sheet_cell_range
-            else:
-                # Fall back to first sheet in golden workbook
-                sheet_name = wb_golden.sheetnames[0]
-                cell_range = sheet_cell_range
-
-            cell_range = cell_range.strip("'\"")
-
+        for sheet_name, cell_range in parsed_ranges:
             passed, message = _compare_cells(wb_golden, wb_output, sheet_name, cell_range)
             if not passed:
                 all_passed = False

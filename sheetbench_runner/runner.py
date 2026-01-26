@@ -212,6 +212,7 @@ async def run(
     tasks: list[Task],
     concurrency: int = 4,
     timeout_seconds: int = 3600,
+    reevaluate: bool = False,
 ) -> RunStats:
     """
     High-level function to run tasks.
@@ -265,6 +266,42 @@ async def run(
     run_dir.load()
     if run_dir.get_completed_count() > 0:
         logger.info(f"Resuming: {run_dir.get_completed_count()} tasks already completed")
+
+    # Re-evaluate existing results if requested
+    if reevaluate:
+        reevaluated = 0
+        changed = 0
+        for task in tasks:
+            existing = run_dir.get_result(task.id)
+            if not existing:
+                continue
+            output_file = existing.get("output_file")
+            if not output_file:
+                continue
+            output_path = run_dir.path / output_file
+            if not output_path.exists():
+                continue
+
+            # Re-evaluate
+            eval_result = evaluator.evaluate(task, output_path)
+            new_result = "pass" if eval_result.passed else "fail"
+            old_result = existing.get("result")
+
+            if new_result != old_result:
+                changed += 1
+                logger.info(
+                    f"Task {task.id}: {old_result} -> {new_result} "
+                    f"({eval_result.message or 'OK'})"
+                )
+
+            # Update the result in place
+            existing["result"] = new_result
+            existing["message"] = eval_result.message
+            reevaluated += 1
+
+        if reevaluated > 0:
+            run_dir._save_results()
+            logger.info(f"Re-evaluated {reevaluated} tasks, {changed} changed")
 
     # Run tasks
     async with InfuserClient(infuser_url, timeout_seconds) as infuser:

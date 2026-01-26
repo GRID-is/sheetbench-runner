@@ -13,6 +13,7 @@ from sheetbench_runner.evaluator import (
     _col_num_to_name,
     _compare_cell_values,
     _generate_cell_names,
+    _parse_sheet_cell_ranges,
     _transform_value,
 )
 
@@ -123,6 +124,135 @@ class TestGenerateCellNames:
     def test_multi_column_range(self):
         names = _generate_cell_names("A1:B2")
         assert set(names) == {"A1", "A2", "B1", "B2"}
+
+
+class TestParseSheetCellRanges:
+    """Tests for parsing answer_position into (sheet_name, cell_range) tuples."""
+
+    def test_simple_sheet_name_with_exclamation(self):
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("Sheet1!A1:B10")
+
+        # Assert
+        assert result == [("Sheet1", "A1:B10")]
+
+    def test_quoted_sheet_name(self):
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("'Sheet1'!A1:B10")
+
+        # Assert
+        assert result == [("Sheet1", "A1:B10")]
+
+    def test_multiple_ranges_simple_sheets(self):
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("Sheet1!A1,Sheet2!B2")
+
+        # Assert
+        assert result == [("Sheet1", "A1"), ("Sheet2", "B2")]
+
+    def test_fallback_to_answer_sheet(self):
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("A1:B10", answer_sheet="MySheet")
+
+        # Assert
+        assert result == [("MySheet", "A1:B10")]
+
+    def test_fallback_to_default_sheet(self):
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("A1:B10", fallback_sheet_name="DefaultSheet")
+
+        # Assert
+        assert result == [("DefaultSheet", "A1:B10")]
+
+    # ============================================================
+    # Tests for sheet names containing commas
+    # These verify that quoted sheet names with commas are parsed correctly.
+    # ============================================================
+
+    def test_sheet_name_with_single_comma(self):
+        """Sheet names with commas are correctly parsed when quoted."""
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("'a, b'!A1:B10")
+
+        # Assert
+        assert result == [("a, b", "A1:B10")]
+
+    def test_sheet_name_with_multiple_commas(self):
+        """Sheet names with multiple commas are correctly parsed when quoted."""
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("'a, b, c'!A1")
+
+        # Assert
+        assert result == [("a, b, c", "A1")]
+
+    def test_multiple_ranges_with_comma_in_sheet_name(self):
+        """Multiple ranges where one sheet name contains a comma."""
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("'Sales, Q1'!A1,Sheet2!B2")
+
+        # Assert
+        assert result == [("Sales, Q1", "A1"), ("Sheet2", "B2")]
+
+    def test_answer_sheet_with_comma(self):
+        """answer_sheet field with comma in name is handled correctly."""
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("A1:B10", answer_sheet="'Revenue, 2024'")
+
+        # Assert
+        assert result == [("Revenue, 2024", "A1:B10")]
+
+    # ============================================================
+    # Tests for malformed quotes (missing opening quote)
+    # These occur in real datasets and need repair.
+    # ============================================================
+
+    def test_missing_opening_quote_first_range(self):
+        """First range missing opening quote, second is correct."""
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("Sheet3'!A:G,'Sheet4'!A:G")
+
+        # Assert
+        assert result == [("Sheet3", "A:G"), ("Sheet4", "A:G")]
+
+    def test_missing_opening_quotes_multiple_ranges(self):
+        """Multiple ranges with missing opening quotes, one unquoted."""
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges(
+            "SOME SHEET'!A2:C100,'OTHER SHEET'!AB44,EXTRA!C5:D5"
+        )
+
+        # Assert
+        assert result == [
+            ("SOME SHEET", "A2:C100"),
+            ("OTHER SHEET", "AB44"),
+            ("EXTRA", "C5:D5"),
+        ]
+
+    def test_quotes_around_entire_reference(self):
+        """Quotes wrapping entire reference instead of just sheet name."""
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("'9045!A1:F9','34354!A1:F1'")
+
+        # Assert
+        assert result == [("9045", "A1:F9"), ("34354", "A1:F1")]
+
+    def test_external_workbook_reference(self):
+        """External workbook reference with quoted sheet name."""
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("[workbook2.xlsx]'sheet 2'!B4")
+
+        # Assert
+        assert result == [("[workbook2.xlsx]sheet 2", "B4")]
+
+    # ============================================================
+    # Error cases
+    # ============================================================
+
+    def test_no_sheet_name_raises_error(self):
+        """Raises ValueError when no sheet name is available."""
+        # Arrange & Act & Assert
+        with pytest.raises(ValueError, match="No sheet name available"):
+            _parse_sheet_cell_ranges("A1:B10")
 
 
 @pytest.fixture
