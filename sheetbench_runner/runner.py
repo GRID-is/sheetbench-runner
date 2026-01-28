@@ -4,10 +4,16 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Union
+
+from rich.console import Console, Group
+from rich.live import Live
+from rich.progress import BarColumn, Progress, TaskID, TextColumn, TimeElapsedColumn
+from rich.table import Table
+from rich.text import Text
 
 from .dataset import Dataset
 from .entities import RunMetadata, Task, TaskResult, TaskStatus
@@ -19,6 +25,7 @@ from .prompt import build_prompt
 from .run_directory import RunDirectory
 
 logger = logging.getLogger(__name__)
+console = Console()
 
 
 @dataclass
@@ -31,6 +38,13 @@ class RunStats:
     failed: int = 0
     errors: int = 0  # Transient errors (will retry)
     skipped: int = 0  # Already completed in previous run
+    running_tasks: set[str] = field(default_factory=set)
+
+    @property
+    def pass_rate(self) -> float:
+        """Current pass rate as percentage."""
+        evaluated = self.passed + self.failed
+        return (100 * self.passed / evaluated) if evaluated > 0 else 0.0
 
 
 class TaskRunner:
@@ -71,6 +85,40 @@ class TaskRunner:
         self._semaphore = asyncio.Semaphore(concurrency)
         self._stats = RunStats()
         self._use_new_endpoint = use_new_endpoint
+        self._progress: Progress | None = None
+        self._progress_task: TaskID | None = None
+        self._live: Live | None = None
+
+    def _build_display(self) -> Group:
+        """Build the rich display with progress bar and running tasks."""
+        # Progress bar
+        progress_table = self._progress.get_renderable() if self._progress else Text("")
+
+        # Stats line
+        stats = self._stats
+        evaluated = stats.passed + stats.failed
+        if evaluated > 0:
+            stats_text = Text()
+            stats_text.append(f"Pass: {stats.passed}", style="green")
+            stats_text.append(f"  Fail: {stats.failed}", style="red")
+            stats_text.append(f"  Rate: {stats.pass_rate:.1f}%", style="cyan bold")
+            if stats.errors > 0:
+                stats_text.append(f"  Errors: {stats.errors}", style="yellow")
+        else:
+            stats_text = Text("Waiting for first result...", style="dim")
+
+        # Running tasks table
+        running_table = Table.grid(padding=(0, 2))
+        running_table.add_column("status", width=3)
+        running_table.add_column("task_id")
+
+        running_list = sorted(stats.running_tasks)
+        for task_id in running_list[:8]:  # Show max 8 running tasks
+            running_table.add_row("⚙", task_id)
+        if len(running_list) > 8:
+            running_table.add_row("", f"... and {len(running_list) - 8} more")
+
+        return Group(progress_table, stats_text, running_table)
 
     async def run_all(self, tasks: list[Task]) -> RunStats:
         """
@@ -91,28 +139,54 @@ class TaskRunner:
         if self._stats.skipped > 0:
             logger.info(f"Resuming: {self._stats.skipped} tasks already completed")
 
-        # Run pending tasks in parallel
+        # Run pending tasks in parallel with live progress display
         if pending_tasks:
             concurrency = self._semaphore._value
             logger.info(f"Running {len(pending_tasks)} tasks with concurrency={concurrency}")
-            await asyncio.gather(
-                *[self._run_task_safe(task) for task in pending_tasks],
-                return_exceptions=False,  # Exceptions are handled in _run_task_safe
+
+            # Set up progress display
+            self._progress = Progress(
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(bar_width=40),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                TextColumn("({task.completed}/{task.total})"),
+                TimeElapsedColumn(),
+                console=console,
+                transient=False,
             )
+            self._progress_task = self._progress.add_task(
+                "Progress", total=len(pending_tasks)
+            )
+
+            with Live(self._build_display(), console=console, refresh_per_second=4) as live:
+                self._live = live
+                await asyncio.gather(
+                    *[self._run_task_safe(task) for task in pending_tasks],
+                    return_exceptions=False,  # Exceptions are handled in _run_task_safe
+                )
+                self._live = None
         else:
             logger.info("No tasks to run (all already completed)")
 
-        # Accumulate stats uniformly from all tasks
+        # Accumulate stats for skipped tasks (already completed in previous runs)
+        # Pending task stats are tracked inline during execution
+        skipped_task_ids = {t.id for t in tasks} - {t.id for t in pending_tasks}
         for task in tasks:
-            result = self._run_dir.get_result(task.id)
-            if result is None:
+            if task.id in skipped_task_ids:
+                result = self._run_dir.get_result(task.id)
+                if result is not None:
+                    if result.get("result") == "pass":
+                        self._stats.passed += 1
+                    elif result.get("result") == "fail":
+                        self._stats.failed += 1
+
+        # Count completed = passed + failed
+        self._stats.completed = self._stats.passed + self._stats.failed
+
+        # Count errors = tasks that should have results but don't
+        for task in pending_tasks:
+            if self._run_dir.get_result(task.id) is None:
                 self._stats.errors += 1
-            elif result.get("result") == "pass":
-                self._stats.passed += 1
-                self._stats.completed += 1
-            elif result.get("result") == "fail":
-                self._stats.failed += 1
-                self._stats.completed += 1
 
         return self._stats
 
@@ -132,6 +206,23 @@ class TaskRunner:
                 error=f"Unexpected error: {e}",
             )
 
+    def _update_display(self) -> None:
+        """Update the live display."""
+        if self._live:
+            self._live.update(self._build_display())
+
+    def _task_completed(self, task_id: str, passed: bool | None) -> None:
+        """Update stats and display when a task completes."""
+        self._stats.running_tasks.discard(task_id)
+        if passed is True:
+            self._stats.passed += 1
+        elif passed is False:
+            self._stats.failed += 1
+        # Update progress bar
+        if self._progress and self._progress_task is not None:
+            self._progress.advance(self._progress_task)
+        self._update_display()
+
     async def _run_task(self, task: Task) -> TaskResult:
         """
         Run a single task: call infuser, copy artifacts, evaluate, record.
@@ -139,7 +230,9 @@ class TaskRunner:
         Uses semaphore to limit concurrency.
         """
         async with self._semaphore:
-            logger.info(f"Starting task {task.id}")
+            self._stats.running_tasks.add(task.id)
+            self._update_display()
+            logger.debug(f"Starting task {task.id}")
             start_time = time.time()
 
             result = TaskResult(
@@ -173,6 +266,7 @@ class TaskRunner:
                     result.status = TaskStatus.FAILED
                     result.error = "No output file produced"
                     logger.warning(f"Task {task.id}: No output file (will retry)")
+                    self._task_completed(task.id, passed=None)
                     return result
 
                 # Evaluate
@@ -184,10 +278,11 @@ class TaskRunner:
                 result.status = TaskStatus.EVALUATED
 
                 status_str = "PASS" if eval_result.passed else "FAIL"
-                logger.info(f"Task {task.id}: {status_str} ({duration:.1f}s)")
+                logger.debug(f"Task {task.id}: {status_str} ({duration:.1f}s)")
 
                 # Record result - only for actually evaluated tasks
                 self._run_dir.record_result(result)
+                self._task_completed(task.id, passed=eval_result.passed)
                 return result
 
             except InfuserTransientError as e:
@@ -197,6 +292,7 @@ class TaskRunner:
                 result.error = str(e)
                 result.duration_seconds = round(duration, 1)
                 # Don't record - should be retried on resume
+                self._task_completed(task.id, passed=None)
                 return result
 
     async def _run_task_old_endpoint(
