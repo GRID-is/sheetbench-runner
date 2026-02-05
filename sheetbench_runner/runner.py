@@ -158,13 +158,37 @@ class TaskRunner:
                 "Progress", total=len(pending_tasks)
             )
 
-            with Live(self._build_display(), console=console, refresh_per_second=4) as live:
-                self._live = live
-                await asyncio.gather(
-                    *[self._run_task_safe(task) for task in pending_tasks],
-                    return_exceptions=False,  # Exceptions are handled in _run_task_safe
-                )
-                self._live = None
+            # Redirect logging to file during live display
+            log_file = self._run_dir.path / "run.log"
+            file_handler = logging.FileHandler(log_file, mode="a")
+            file_handler.setFormatter(
+                logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+            )
+
+            # Swap console handlers for file handler
+            root_logger = logging.getLogger()
+            original_handlers = root_logger.handlers[:]
+            for handler in original_handlers:
+                root_logger.removeHandler(handler)
+            root_logger.addHandler(file_handler)
+
+            try:
+                console.print(f"Logging to: {log_file}")
+                with Live(
+                    self._build_display(), console=console, refresh_per_second=4
+                ) as live:
+                    self._live = live
+                    await asyncio.gather(
+                        *[self._run_task_safe(task) for task in pending_tasks],
+                        return_exceptions=False,  # Exceptions are handled in _run_task_safe
+                    )
+                    self._live = None
+            finally:
+                # Restore original handlers
+                root_logger.removeHandler(file_handler)
+                file_handler.close()
+                for handler in original_handlers:
+                    root_logger.addHandler(handler)
         else:
             logger.info("No tasks to run (all already completed)")
 
