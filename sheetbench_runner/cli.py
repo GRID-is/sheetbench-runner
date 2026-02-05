@@ -93,6 +93,11 @@ def load_task_ids_from_file(file_path: Path) -> set[str]:
     is_flag=True,
     help="Re-evaluate all tasks that have output files (useful after parser fixes)",
 )
+@click.option(
+    "--legacy",
+    is_flag=True,
+    help="Use legacy /v1/chat/completions endpoint (requires shared filesystem)",
+)
 async def cli(
     dataset: Path,
     run_dir: Path,
@@ -104,6 +109,7 @@ async def cli(
     timeout: int | None,
     verbose: bool,
     reevaluate: bool,
+    legacy: bool,
 ) -> None:
     """Parallel inference runner for SpreadsheetBench with inline evaluation."""
     setup_logging(verbose)
@@ -149,6 +155,7 @@ async def cli(
         concurrency=cfg.concurrency,
         timeout_seconds=cfg.timeout_seconds,
         reevaluate=reevaluate,
+        use_new_endpoint=not legacy,
     )
 
     # Print summary
