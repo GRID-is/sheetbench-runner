@@ -169,18 +169,6 @@ def test_exists_check(temp_dir: Path):
     assert not run_dir_new.exists()
 
 
-def test_get_output_path(temp_dir: Path):
-    """Test getting expected output path for a task."""
-    # Arrange
-    run_dir = RunDirectory(temp_dir / "run")
-
-    # Act
-    output_path = run_dir.get_output_path("13-1")
-
-    # Assert
-    assert output_path == temp_dir / "run" / "13-1-output.xlsx"
-
-
 def test_get_result_returns_result_dict(temp_dir: Path):
     """get_result() returns the result dict for a completed task."""
     # Arrange

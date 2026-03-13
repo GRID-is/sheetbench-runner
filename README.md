@@ -80,8 +80,6 @@ Options:
   -v, --verbose          Enable verbose logging
   --reevaluate           Re-evaluate all tasks that have output files (useful
                          after parser fixes)
-  --legacy               Use legacy /v1/chat/completions endpoint (requires
-                         shared filesystem)
   --help                 Show this message and exit.
 ```
 

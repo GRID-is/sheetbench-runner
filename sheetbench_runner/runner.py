@@ -7,7 +7,6 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Union
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -18,9 +17,8 @@ from rich.text import Text
 from .dataset import Dataset
 from .entities import RunMetadata, Task, TaskResult, TaskStatus
 from .evaluator import Evaluator
-from .infuser import InfuserClient, InfuserTransientError
-from .new_infuser import NewInfuserClient
-from .new_prompt import build_prompt as build_new_prompt
+from .infuser import InfuserClient
+from .infuser_base import InfuserTransientError
 from .prompt import build_prompt
 from .run_directory import RunDirectory
 
@@ -60,12 +58,11 @@ class TaskRunner:
 
     def __init__(
         self,
-        infuser: Union[InfuserClient, NewInfuserClient],
+        infuser: InfuserClient,
         evaluator: Evaluator,
         dataset: Dataset,
         run_dir: RunDirectory,
         concurrency: int = 4,
-        use_new_endpoint: bool = False,
     ):
         """
         Initialize the task runner.
@@ -76,7 +73,6 @@ class TaskRunner:
             dataset: The SpreadsheetBench dataset
             run_dir: Run directory for results
             concurrency: Maximum number of parallel tasks
-            use_new_endpoint: Use new /solve endpoint instead of /v1/chat/completions
         """
         self._infuser = infuser
         self._evaluator = evaluator
@@ -84,7 +80,6 @@ class TaskRunner:
         self._run_dir = run_dir
         self._semaphore = asyncio.Semaphore(concurrency)
         self._stats = RunStats()
-        self._use_new_endpoint = use_new_endpoint
         self._progress: Progress | None = None
         self._progress_task: TaskID | None = None
         self._live: Live | None = None
@@ -249,7 +244,7 @@ class TaskRunner:
 
     async def _run_task(self, task: Task) -> TaskResult:
         """
-        Run a single task: call infuser, copy artifacts, evaluate, record.
+        Run a single task: upload workbook, call /solve, evaluate, record.
 
         Uses semaphore to limit concurrency.
         """
@@ -266,16 +261,38 @@ class TaskRunner:
             )
 
             try:
-                if self._use_new_endpoint:
-                    # New flow: upload workbook, call /solve, get inline response
-                    output_file, transcript_file = await self._run_task_new_endpoint(
-                        task, result
-                    )
-                else:
-                    # Old flow: send paths in prompt, copy files from returned paths
-                    output_file, transcript_file = await self._run_task_old_endpoint(
-                        task, result
-                    )
+                # Upload workbook
+                input_path = self._dataset.get_input_path(task)
+                workbook_id = await self._infuser.upload_workbook(input_path)
+                logger.info(f"Task {task.id} uploaded workbook as {workbook_id}")
+
+                # Build prompt with workbook_id
+                prompt = build_prompt(task, workbook_id)
+
+                # Call /solve
+                response = await self._infuser.solve(workbook_id, prompt)
+
+                logger.info(f"Task {task.id} solve completed")
+
+                # Write artifacts directly from response
+                output_file: str | None = None
+                transcript_file: str | None = None
+
+                if response.output_xlsx:
+                    output_file = f"{task.id}-output.xlsx"
+                    output_path = self._run_dir.path / output_file
+                    output_path.write_bytes(response.output_xlsx)
+
+                if response.transcript:
+                    transcript_file = f"{task.id}-transcript.json"
+                    transcript_path = self._run_dir.path / transcript_file
+                    transcript_path.write_text(json.dumps(response.transcript, indent=2))
+
+                # Update result with usage stats
+                result.turns = response.usage.turns
+                result.tool_calls = response.usage.tool_calls
+                result.input_tokens = response.usage.input_tokens
+                result.output_tokens = response.usage.output_tokens
 
                 duration = time.time() - start_time
                 result.duration_seconds = round(duration, 1)
@@ -319,78 +336,6 @@ class TaskRunner:
                 self._task_completed(task.id, passed=None)
                 return result
 
-    async def _run_task_old_endpoint(
-        self, task: Task, result: TaskResult
-    ) -> tuple[str | None, str | None]:
-        """Run task using old /v1/chat/completions endpoint with filesystem paths."""
-        assert isinstance(self._infuser, InfuserClient)
-
-        # Build prompt with filesystem paths
-        input_path = self._dataset.get_input_path(task)
-        output_path = self._run_dir.get_output_path(task.id)
-        prompt = build_prompt(task, input_path, output_path)
-
-        # Call infuser
-        response = await self._infuser.solve(prompt)
-
-        logger.info(f"Task {task.id} infuser completed")
-
-        # Copy artifacts from server filesystem paths
-        output_file, transcript_file = self._run_dir.copy_artifacts(
-            task.id,
-            response.output_path,
-            response.transcript_path,
-        )
-
-        # Update result with usage stats
-        result.turns = response.usage.turns
-        result.tool_calls = response.usage.tool_calls
-        result.input_tokens = response.usage.input_tokens
-        result.output_tokens = response.usage.output_tokens
-
-        return output_file, transcript_file
-
-    async def _run_task_new_endpoint(
-        self, task: Task, result: TaskResult
-    ) -> tuple[str | None, str | None]:
-        """Run task using new /solve endpoint with workbook upload."""
-        assert isinstance(self._infuser, NewInfuserClient)
-
-        # Upload workbook
-        input_path = self._dataset.get_input_path(task)
-        workbook_id = await self._infuser.upload_workbook(input_path)
-        logger.info(f"Task {task.id} uploaded workbook as {workbook_id}")
-
-        # Build prompt with workbook_id
-        prompt = build_new_prompt(task, workbook_id)
-
-        # Call /solve
-        response = await self._infuser.solve(workbook_id, prompt)
-
-        logger.info(f"Task {task.id} solve completed")
-
-        # Write artifacts directly from response
-        output_file: str | None = None
-        transcript_file: str | None = None
-
-        if response.output_xlsx:
-            output_file = f"{task.id}-output.xlsx"
-            output_path = self._run_dir.path / output_file
-            output_path.write_bytes(response.output_xlsx)
-
-        if response.transcript:
-            transcript_file = f"{task.id}-transcript.json"
-            transcript_path = self._run_dir.path / transcript_file
-            transcript_path.write_text(json.dumps(response.transcript, indent=2))
-
-        # Update result with usage stats
-        result.turns = response.usage.turns
-        result.tool_calls = response.usage.tool_calls
-        result.input_tokens = response.usage.input_tokens
-        result.output_tokens = response.usage.output_tokens
-
-        return output_file, transcript_file
-
 
 async def run(
     dataset_path: Path,
@@ -401,7 +346,6 @@ async def run(
     concurrency: int = 4,
     timeout_seconds: int = 3600,
     reevaluate: bool = False,
-    use_new_endpoint: bool = False,
 ) -> RunStats:
     """
     High-level function to run tasks.
@@ -415,7 +359,6 @@ async def run(
         concurrency: Number of parallel tasks
         timeout_seconds: Timeout per task
         reevaluate: Re-evaluate tasks with existing output files
-        use_new_endpoint: Use new /solve endpoint instead of /v1/chat/completions
 
     Returns:
         RunStats with completion statistics
@@ -495,28 +438,14 @@ async def run(
             logger.info(f"Re-evaluated {reevaluated} tasks, {changed} changed")
 
     # Run tasks
-    # Note: if/else needed for proper type inference of infuser client
-    if use_new_endpoint:
-        async with NewInfuserClient(infuser_url, timeout_seconds) as infuser:
-            runner = TaskRunner(
-                infuser=infuser,
-                evaluator=evaluator,
-                dataset=dataset,
-                run_dir=run_dir,
-                concurrency=concurrency,
-                use_new_endpoint=True,
-            )
-            stats = await runner.run_all(tasks)
-    else:
-        async with InfuserClient(infuser_url, timeout_seconds) as infuser:
-            runner = TaskRunner(
-                infuser=infuser,
-                evaluator=evaluator,
-                dataset=dataset,
-                run_dir=run_dir,
-                concurrency=concurrency,
-                use_new_endpoint=False,
-            )
-            stats = await runner.run_all(tasks)
+    async with InfuserClient(infuser_url, timeout_seconds) as infuser:
+        runner = TaskRunner(
+            infuser=infuser,
+            evaluator=evaluator,
+            dataset=dataset,
+            run_dir=run_dir,
+            concurrency=concurrency,
+        )
+        stats = await runner.run_all(tasks)
 
     return stats

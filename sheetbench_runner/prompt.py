@@ -1,16 +1,14 @@
 """Prompt building for SpreadsheetBench tasks."""
 
-from pathlib import Path
-
 from .entities import Task
 
 # The standard prompt format for SpreadsheetBench tasks
 PROMPT_TEMPLATE = """You are a spreadsheet expert.
 
-You need to solve the given spreadsheet manipulation question, which contains five types \
-of information:
+You need to solve the given spreadsheet manipulation question, which contains the following \
+types of information:
 - instruction: The question about spreadsheet manipulation.
-- spreadsheet_path: The path of the spreadsheet file you need to manipulate.
+- workbook_id: The ID of the workbook that has been uploaded.
 - instruction_type: There are two values (Cell-Level Manipulation, Sheet-Level \
 Manipulation) used to indicate whether the answer to this question applies only to \
 specific cells or to the entire worksheet.
@@ -18,41 +16,39 @@ specific cells or to the entire worksheet.
 Manipulation questions, this field is filled with the cell position; for Sheet-Level \
 Manipulation, it is the maximum range of cells you need to modify. You only need to \
 modify or fill in values within the cell range specified by answer_position.
-- output_path: You need to generate the modified spreadsheet file in this new path.
 
 Below is the spreadsheet manipulation question you need to solve:
 ### instruction
 {instruction}
 
-### spreadsheet_path
-{spreadsheet_path}
+### workbook_id
+{workbook_id}
 
 ### instruction_type
 {instruction_type}
 
 ### answer_position
 {answer_position}
-{extra_context}### output_path
-{output_path}
-"""
+{extra_context}"""
 
 
-def build_prompt(
-    task: Task,
-    input_path: Path,
-    output_path: Path,
-) -> str:
+def build_prompt(task: Task, workbook_id: str) -> str:
     """
     Build the prompt for a SpreadsheetBench task.
 
     Args:
         task: The task to build the prompt for
-        input_path: Path to the input spreadsheet file
-        output_path: Path where the output spreadsheet should be written
+        workbook_id: ID of the uploaded workbook
 
     Returns:
         The formatted prompt string
+
+    Raises:
+        ValueError: If workbook_id is empty
     """
+    if not workbook_id or not workbook_id.strip():
+        raise ValueError("workbook_id cannot be empty")
+
     # Build extra context from optional fields
     extra_lines: list[str] = []
     if task.answer_sheet:
@@ -66,9 +62,8 @@ def build_prompt(
 
     return PROMPT_TEMPLATE.format(
         instruction=task.instruction,
-        spreadsheet_path=str(input_path),
+        workbook_id=workbook_id,
         instruction_type=task.instruction_type,
         answer_position=task.answer_position,
         extra_context=extra_context,
-        output_path=str(output_path),
     )

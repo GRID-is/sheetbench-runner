@@ -1,7 +1,6 @@
 """Run directory management for SpreadsheetBench results."""
 
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +15,6 @@ class RunDirectory:
     - Creating run directories and run.json metadata
     - Loading/saving results.json
     - Tracking completed tasks for resumability
-    - Copying task artifacts (output xlsx, transcript json)
     """
 
     def __init__(self, path: Path):
@@ -115,44 +113,6 @@ class RunDirectory:
         results_list = sorted(self._results.values(), key=lambda x: x["task_id"])
         with open(self.results_path, "w") as f:
             json.dump(results_list, f, indent=2)
-
-    def copy_artifacts(
-        self,
-        task_id: str,
-        output_path: Path | str | None,
-        transcript_path: Path | str | None,
-    ) -> tuple[str | None, str | None]:
-        """
-        Copy task artifacts to the run directory.
-
-        Args:
-            task_id: The task ID
-            output_path: Path to the output xlsx file (from infuser response)
-            transcript_path: Path to the transcript json file (from infuser response)
-
-        Returns:
-            Tuple of (output_filename, transcript_filename) or None if not copied
-        """
-        output_file = None
-        transcript_file = None
-
-        if output_path:
-            output_path = Path(output_path)
-            if output_path.exists():
-                output_file = f"{task_id}-output.xlsx"
-                shutil.copy2(output_path, self.path / output_file)
-
-        if transcript_path:
-            transcript_path = Path(transcript_path)
-            if transcript_path.exists():
-                transcript_file = f"{task_id}-transcript.json"
-                shutil.copy2(transcript_path, self.path / transcript_file)
-
-        return output_file, transcript_file
-
-    def get_output_path(self, task_id: str) -> Path:
-        """Get the expected output path for a task (where infuser should write)."""
-        return self.path / f"{task_id}-output.xlsx"
 
     def load_metadata(self) -> RunMetadata | None:
         """Load run metadata from run.json if it exists."""
