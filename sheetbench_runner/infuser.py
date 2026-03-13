@@ -21,7 +21,7 @@ __all__ = [
 
 class InfuserClient(InfuserBaseClient):
     """
-    Client for the grid-apiary-llm-fusion infuser API.
+    Client for the GRID Agent API.
 
     Uses the old /v1/chat/completions endpoint with filesystem paths.
 
