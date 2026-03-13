@@ -155,3 +155,41 @@ async def test_client_with_custom_httpx_client():
 
     # Cleanup
     await custom_client.aclose()
+
+
+@respx.mock
+async def test_api_key_sent_as_bearer_token(
+    monkeypatch: pytest.MonkeyPatch, mock_infuser_response: dict,
+):
+    """Test that GRID_API_KEY is sent as a Bearer token when set."""
+    # Arrange
+    monkeypatch.setenv("GRID_API_KEY", "test-key-123")
+    route = respx.post("http://localhost:3000/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=mock_infuser_response)
+    )
+
+    # Act
+    async with InfuserClient("http://localhost:3000") as client:
+        await client.solve("Test prompt")
+
+    # Assert
+    assert route.calls[0].request.headers["Authorization"] == "Bearer test-key-123"
+
+
+@respx.mock
+async def test_no_auth_header_without_api_key(
+    monkeypatch: pytest.MonkeyPatch, mock_infuser_response: dict,
+):
+    """Test that no Authorization header is sent when GRID_API_KEY is unset."""
+    # Arrange
+    monkeypatch.delenv("GRID_API_KEY", raising=False)
+    route = respx.post("http://localhost:3000/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=mock_infuser_response)
+    )
+
+    # Act
+    async with InfuserClient("http://localhost:3000") as client:
+        await client.solve("Test prompt")
+
+    # Assert
+    assert "Authorization" not in route.calls[0].request.headers

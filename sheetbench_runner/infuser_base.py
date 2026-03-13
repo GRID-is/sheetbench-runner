@@ -1,5 +1,6 @@
 """Shared infrastructure for infuser HTTP clients."""
 
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Self
 
@@ -89,8 +90,13 @@ class InfuserBaseClient:
 
     async def __aenter__(self) -> Self:
         if self._client is None:
+            headers: dict[str, str] = {}
+            api_key = os.environ.get("GRID_API_KEY")
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
             self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(self.timeout_seconds, connect=30.0)
+                headers=headers,
+                timeout=httpx.Timeout(self.timeout_seconds, connect=30.0),
             )
         return self
 
