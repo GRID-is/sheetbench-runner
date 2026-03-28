@@ -73,27 +73,6 @@ class InfuserUsage:
 
 
 @dataclass(frozen=True)
-class InfuserResponse:
-    """Response from the infuser API."""
-
-    id: str
-    model: str
-    usage: InfuserUsage
-    output_path: str | None = None
-    transcript_path: str | None = None
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "InfuserResponse":
-        return cls(
-            id=data["id"],
-            model=data["model"],
-            usage=InfuserUsage.from_dict(data["usage"]),
-            output_path=data.get("output_path"),
-            transcript_path=data.get("transcript_path"),
-        )
-
-
-@dataclass(frozen=True)
 class EvaluationResult:
     """Result of evaluating a task output against the golden file."""
 
