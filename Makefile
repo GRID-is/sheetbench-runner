@@ -13,7 +13,7 @@ typecheck:
 
 install:
 	uv build
-	pip install --user --force-reinstall dist/*.whl
+	uv tool install --force dist/*.whl
 
 test_%:
 	uv run pytest --tb=short -vs -k $@ tests/
