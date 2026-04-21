@@ -309,9 +309,7 @@ class Evaluator:
 
         golden_path = self._get_golden_path(task)
         if not golden_path.exists():
-            return EvaluationResult(
-                passed=False, message=f"Golden file not found: {golden_path}"
-            )
+            return EvaluationResult(passed=False, message=f"Golden file not found: {golden_path}")
 
         try:
             return self._compare_workbooks(task, golden_path, output_path)

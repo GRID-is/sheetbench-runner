@@ -59,9 +59,7 @@ async def handle_http_errors(operation: str) -> AsyncIterator[None]:
             raise InfuserTransientError(
                 f"{operation} error {e.response.status_code}: {text}"
             ) from e
-        raise InfuserPermanentError(
-            f"{operation} error {e.response.status_code}: {text}"
-        ) from e
+        raise InfuserPermanentError(f"{operation} error {e.response.status_code}: {text}") from e
     except (httpx.ConnectError, httpx.TimeoutException) as e:
         raise InfuserTransientError(f"Connection error: {e}") from e
 

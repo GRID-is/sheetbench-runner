@@ -72,6 +72,12 @@ def load_task_ids_from_file(file_path: Path) -> set[str]:
     help="Override infuser URL from config",
 )
 @click.option(
+    "--model",
+    type=str,
+    default=None,
+    help="Model override (e.g., 'openai/gpt-4o', 'minimax/M2.1')",
+)
+@click.option(
     "--concurrency",
     type=int,
     default=None,
@@ -84,7 +90,8 @@ def load_task_ids_from_file(file_path: Path) -> set[str]:
     help="Timeout per task in seconds (default: 3600)",
 )
 @click.option(
-    "-v", "--verbose",
+    "-v",
+    "--verbose",
     is_flag=True,
     help="Enable verbose logging",
 )
@@ -100,6 +107,7 @@ async def cli(
     task_file: Path | None,
     config: Path | None,
     infuser_url: str | None,
+    model: str | None,
     concurrency: int | None,
     timeout: int | None,
     verbose: bool,
@@ -116,6 +124,7 @@ async def cli(
     cfg = Config.load(config)
     cfg = cfg.with_overrides(
         infuser_url=infuser_url,
+        model=model,
         concurrency=concurrency,
         timeout_seconds=timeout,
     )
@@ -144,6 +153,7 @@ async def cli(
         dataset_path=dataset,
         run_dir_path=run_dir,
         infuser_url=cfg.infuser_url,
+        model=cfg.model,
         infuser_config=cfg.infuser_config,
         tasks=tasks,
         concurrency=cfg.concurrency,
@@ -160,8 +170,8 @@ async def cli(
     print(f"Completed:    {stats.completed}")
     if stats.passed + stats.failed > 0:
         evaluated = stats.passed + stats.failed
-        print(f"  Passed:     {stats.passed} ({100*stats.passed/evaluated:.1f}%)")
-        print(f"  Failed:     {stats.failed} ({100*stats.failed/evaluated:.1f}%)")
+        print(f"  Passed:     {stats.passed} ({100 * stats.passed / evaluated:.1f}%)")
+        print(f"  Failed:     {stats.failed} ({100 * stats.failed / evaluated:.1f}%)")
     if stats.errors:
         print(f"Errors:       {stats.errors} (will retry on resume)")
     print(f"\nResults: {run_dir}")

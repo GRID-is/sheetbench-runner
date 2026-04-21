@@ -63,6 +63,7 @@ class TaskRunner:
         dataset: Dataset,
         run_dir: RunDirectory,
         concurrency: int = 4,
+        model: str | None = None,
     ):
         """
         Initialize the task runner.
@@ -73,12 +74,14 @@ class TaskRunner:
             dataset: The SpreadsheetBench dataset
             run_dir: Run directory for results
             concurrency: Maximum number of parallel tasks
+            model: Optional model override for all tasks
         """
         self._infuser = infuser
         self._evaluator = evaluator
         self._dataset = dataset
         self._run_dir = run_dir
         self._semaphore = asyncio.Semaphore(concurrency)
+        self._model = model
         self._stats = RunStats()
         self._progress: Progress | None = None
         self._progress_task: TaskID | None = None
@@ -149,16 +152,12 @@ class TaskRunner:
                 console=console,
                 transient=False,
             )
-            self._progress_task = self._progress.add_task(
-                "Progress", total=len(pending_tasks)
-            )
+            self._progress_task = self._progress.add_task("Progress", total=len(pending_tasks))
 
             # Redirect logging to file during live display
             log_file = self._run_dir.path / "run.log"
             file_handler = logging.FileHandler(log_file, mode="a")
-            file_handler.setFormatter(
-                logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-            )
+            file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 
             # Swap console handlers for file handler
             root_logger = logging.getLogger()
@@ -169,9 +168,7 @@ class TaskRunner:
 
             try:
                 console.print(f"Logging to: {log_file}")
-                with Live(
-                    self._build_display(), console=console, refresh_per_second=4
-                ) as live:
+                with Live(self._build_display(), console=console, refresh_per_second=4) as live:
                     self._live = live
                     await asyncio.gather(
                         *[self._run_task_safe(task) for task in pending_tasks],
@@ -270,7 +267,7 @@ class TaskRunner:
                 prompt = build_prompt(task, workbook_id)
 
                 # Call /solve
-                response = await self._infuser.solve(workbook_id, prompt)
+                response = await self._infuser.solve(workbook_id, prompt, model=self._model)
 
                 logger.info(f"Task {task.id} solve completed")
 
@@ -311,9 +308,7 @@ class TaskRunner:
                     return result
 
                 # Evaluate
-                eval_result = self._evaluator.evaluate(
-                    task, self._run_dir.path / output_file
-                )
+                eval_result = self._evaluator.evaluate(task, self._run_dir.path / output_file)
                 result.result = "pass" if eval_result.passed else "fail"
                 result.message = eval_result.message
                 result.status = TaskStatus.EVALUATED
@@ -341,6 +336,7 @@ async def run(
     dataset_path: Path,
     run_dir_path: Path,
     infuser_url: str,
+    model: str | None,
     infuser_config: dict[str, object],
     tasks: list[Task],
     concurrency: int = 4,
@@ -354,6 +350,7 @@ async def run(
         dataset_path: Path to the SpreadsheetBench dataset
         run_dir_path: Path to the run directory
         infuser_url: URL of the infuser API
+        model: Model override (e.g., 'openai/gpt-4o'), or None to use default
         infuser_config: Configuration metadata for run.json
         tasks: Tasks to run
         concurrency: Number of parallel tasks
@@ -376,7 +373,10 @@ async def run(
             try:
                 status = await infuser.get_status()
                 model_val = status.get("default_model", "unknown")
-                model = str(model_val) if model_val else "unknown"
+                # Use the model override if provided, otherwise use the infuser's default
+                effective_model = (
+                    model if model is not None else (str(model_val) if model_val else "unknown")
+                )
                 git_hash_val = status.get("version", "unknown")
                 git_hash = str(git_hash_val) if git_hash_val else "unknown"
                 # Merge all status fields into infuser_config
@@ -384,12 +384,16 @@ async def run(
             except Exception as e:
                 logger.warning(f"Could not get infuser status: {e}")
                 model_from_config = infuser_config.get("model", "unknown")
-                model = str(model_from_config) if model_from_config else "unknown"
+                effective_model = (
+                    model
+                    if model is not None
+                    else (str(model_from_config) if model_from_config else "unknown")
+                )
                 git_hash = str(infuser_config.get("git_hash", "unknown"))
                 config = dict(infuser_config)
 
         metadata = RunMetadata(
-            model=model,
+            model=effective_model,
             git_hash=git_hash,
             infuser_config=config,
             notes=run_dir_path.name,
@@ -424,8 +428,7 @@ async def run(
             if new_result != old_result:
                 changed += 1
                 logger.info(
-                    f"Task {task.id}: {old_result} -> {new_result} "
-                    f"({eval_result.message or 'OK'})"
+                    f"Task {task.id}: {old_result} -> {new_result} ({eval_result.message or 'OK'})"
                 )
 
             # Update the result in place
@@ -445,6 +448,7 @@ async def run(
             dataset=dataset,
             run_dir=run_dir,
             concurrency=concurrency,
+            model=model,
         )
         stats = await runner.run_all(tasks)
 

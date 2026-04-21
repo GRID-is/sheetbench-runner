@@ -4,6 +4,7 @@ test:
 	uv run pytest tests/ -v --cov=sheetbench_runner --cov-report=term-missing
 
 lint:
+	uv run ruff format sheetbench_runner/ tests/
 	uv run ruff check sheetbench_runner/ tests/
 
 lt: lint typecheck
