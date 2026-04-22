@@ -1,9 +1,8 @@
 """Configuration loading for SheetBench Runner."""
 
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -17,7 +16,6 @@ class Config:
 
     infuser_url: str = "http://localhost:3000"
     model: str | None = None  # Model override (e.g., "openai/gpt-4o")
-    infuser_config: dict[str, Any] = field(default_factory=dict)
     concurrency: int = 4
     timeout_seconds: int = 3600  # 1 hour per task
 
@@ -40,7 +38,6 @@ class Config:
         return cls(
             infuser_url=infuser.get("url", cls.infuser_url),
             model=infuser.get("model"),
-            infuser_config=infuser.get("config", {}),
             concurrency=runner.get("concurrency", cls.concurrency),
             timeout_seconds=runner.get("timeout_seconds", cls.timeout_seconds),
         )
@@ -56,7 +53,6 @@ class Config:
         return Config(
             infuser_url=infuser_url if infuser_url is not None else self.infuser_url,
             model=model if model is not None else self.model,
-            infuser_config=self.infuser_config,
             concurrency=concurrency if concurrency is not None else self.concurrency,
             timeout_seconds=(
                 timeout_seconds if timeout_seconds is not None else self.timeout_seconds

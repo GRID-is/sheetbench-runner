@@ -337,7 +337,6 @@ async def run(
     run_dir_path: Path,
     infuser_url: str,
     model: str | None,
-    infuser_config: dict[str, object],
     tasks: list[Task],
     concurrency: int = 4,
     timeout_seconds: int = 3600,
@@ -351,7 +350,6 @@ async def run(
         run_dir_path: Path to the run directory
         infuser_url: URL of the infuser API
         model: Model override (e.g., 'openai/gpt-4o'), or None to use default
-        infuser_config: Configuration metadata for run.json
         tasks: Tasks to run
         concurrency: Number of parallel tasks
         timeout_seconds: Timeout per task
@@ -368,34 +366,26 @@ async def run(
     # Create run.json if missing
     if not run_dir.run_json_path.exists():
         logger.info(f"Creating run metadata at {run_dir_path}")
-        # Get status from infuser - all fields go into infuser_config
+        # Get status from infuser - this is the authoritative config source
+        status: dict[str, object] = {}
         async with InfuserClient(infuser_url, timeout_seconds) as infuser:
             try:
                 status = await infuser.get_status()
-                model_val = status.get("default_model", "unknown")
-                # Use the model override if provided, otherwise use the infuser's default
-                effective_model = (
-                    model if model is not None else (str(model_val) if model_val else "unknown")
-                )
-                git_hash_val = status.get("version", "unknown")
-                git_hash = str(git_hash_val) if git_hash_val else "unknown"
-                # Merge all status fields into infuser_config
-                config: dict[str, object] = {**status, **infuser_config}
             except Exception as e:
                 logger.warning(f"Could not get infuser status: {e}")
-                model_from_config = infuser_config.get("model", "unknown")
-                effective_model = (
-                    model
-                    if model is not None
-                    else (str(model_from_config) if model_from_config else "unknown")
-                )
-                git_hash = str(infuser_config.get("git_hash", "unknown"))
-                config = dict(infuser_config)
+
+        # Determine effective model and git hash from status or fallback
+        model_val = status.get("default_model", "unknown")
+        effective_model = (
+            model if model is not None else (str(model_val) if model_val else "unknown")
+        )
+        git_hash_val = status.get("version", "unknown")
+        git_hash = str(git_hash_val) if git_hash_val else "unknown"
 
         metadata = RunMetadata(
             model=effective_model,
             git_hash=git_hash,
-            infuser_config=config,
+            infuser_config=status,
             notes=run_dir_path.name,
         )
         run_dir.create(metadata)

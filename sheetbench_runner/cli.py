@@ -154,7 +154,6 @@ async def cli(
         run_dir_path=run_dir,
         infuser_url=cfg.infuser_url,
         model=cfg.model,
-        infuser_config=cfg.infuser_config,
         tasks=tasks,
         concurrency=cfg.concurrency,
         timeout_seconds=cfg.timeout_seconds,

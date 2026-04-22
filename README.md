@@ -91,18 +91,10 @@ Copy `config.example.toml` to `config.toml` and adjust as needed:
 [infuser]
 url = "http://localhost:3000"
 
-[infuser.config]
-git_hash = "abc1234"
-model = "claude-sonnet-4-5"
-planning_enabled = false
-max_turns = 50
-
 [runner]
 concurrency = 4
 timeout_seconds = 3600
 ```
-
-The `[infuser.config]` section accepts arbitrary key-value pairs. These are stored in `run.json` for reproducibility tracking — use them to record whatever agent configuration is relevant to the run.
 
 CLI options (`--infuser-url`, `--concurrency`, `--timeout`) override their config file equivalents.
 
