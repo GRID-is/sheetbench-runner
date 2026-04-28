@@ -62,8 +62,7 @@ def test_build_prompt_preserves_formatting():
     prompt = build_prompt(task, workbook_id)
 
     # Assert - check section headers are present in order
-    sections = ["### instruction", "### workbook_id", "### instruction_type",
-                "### answer_position"]
+    sections = ["### instruction", "### workbook_id", "### instruction_type", "### answer_position"]
     last_pos = -1
     for section in sections:
         pos = prompt.find(section)

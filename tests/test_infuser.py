@@ -191,7 +191,8 @@ async def test_get_status_success():
 
 @respx.mock
 async def test_api_key_sent_as_bearer_token(
-    monkeypatch: pytest.MonkeyPatch, mock_solve_response: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_solve_response: dict,
 ):
     """Test that GRID_API_KEY is sent as a Bearer token when set."""
     # Arrange
@@ -210,7 +211,8 @@ async def test_api_key_sent_as_bearer_token(
 
 @respx.mock
 async def test_no_auth_header_without_api_key(
-    monkeypatch: pytest.MonkeyPatch, mock_solve_response: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_solve_response: dict,
 ):
     """Test that no Authorization header is sent when GRID_API_KEY is unset."""
     # Arrange

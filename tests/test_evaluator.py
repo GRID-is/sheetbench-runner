@@ -217,9 +217,7 @@ class TestParseSheetCellRanges:
     def test_missing_opening_quotes_multiple_ranges(self):
         """Multiple ranges with missing opening quotes, one unquoted."""
         # Arrange & Act
-        result = _parse_sheet_cell_ranges(
-            "SOME SHEET'!A2:C100,'OTHER SHEET'!AB44,EXTRA!C5:D5"
-        )
+        result = _parse_sheet_cell_ranges("SOME SHEET'!A2:C100,'OTHER SHEET'!AB44,EXTRA!C5:D5")
 
         # Assert
         assert result == [

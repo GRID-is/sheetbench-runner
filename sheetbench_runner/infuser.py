@@ -70,13 +70,20 @@ class InfuserClient(InfuserBaseClient):
             workbook_id: str = data["id"]
             return workbook_id
 
-    async def solve(self, workbook_id: str, prompt: str) -> SolveResponse:
+    async def solve(
+        self,
+        workbook_id: str,
+        prompt: str,
+        *,
+        model: str | None = None,
+    ) -> SolveResponse:
         """
         Solve a task using the /solve endpoint.
 
         Args:
             workbook_id: ID of the uploaded workbook
             prompt: The formatted prompt with workbook_id
+            model: Optional model override (e.g., 'openai/gpt-4o')
 
         Returns:
             SolveResponse with inline transcript and workbook bytes
@@ -85,10 +92,12 @@ class InfuserClient(InfuserBaseClient):
             InfuserTransientError: For 5xx errors, timeouts, connection failures
             InfuserPermanentError: For 4xx errors
         """
-        payload = {
+        payload: dict[str, object] = {
             "workbookId": workbook_id,
             "messages": [{"role": "user", "content": prompt}],
         }
+        if model is not None:
+            payload["model"] = model
 
         async with handle_http_errors("Solve"):
             response = await self.client.post(
@@ -99,9 +108,7 @@ class InfuserClient(InfuserBaseClient):
             data = response.json()
             return self._parse_solve_response(data, workbook_id)
 
-    def _parse_solve_response(
-        self, data: dict[str, object], workbook_id: str
-    ) -> SolveResponse:
+    def _parse_solve_response(self, data: dict[str, object], workbook_id: str) -> SolveResponse:
         """Parse the /solve response into a SolveResponse object."""
         try:
             usage_raw = data.get("usage", {})
@@ -153,8 +160,6 @@ class InfuserClient(InfuserBaseClient):
             InfuserPermanentError: For 4xx errors (including 404)
         """
         async with handle_http_errors("Download"):
-            response = await self.client.get(
-                f"{self.base_url}/workbooks/{workbook_id}/download"
-            )
+            response = await self.client.get(f"{self.base_url}/workbooks/{workbook_id}/download")
             response.raise_for_status()
             return response.content
