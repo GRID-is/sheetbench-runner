@@ -86,9 +86,15 @@ def _col_num_to_name(n: int) -> str:
     return name
 
 
-def _parse_cell_range(range_str: str) -> tuple[tuple[int, int], tuple[int, int]]:
+def _parse_cell_range(
+    range_str: str, max_row: int | None = None
+) -> tuple[tuple[int, int], tuple[int, int]]:
     """
     Parse a range string like 'A1:AB12'.
+
+    Whole-column ranges such as 'A:G' (column letters without row numbers) are
+    bounded by max_row: the start row defaults to 1 and the missing end row to
+    max_row, which the caller supplies as the used row extent of the sheets.
 
     Returns ((start_col, start_row), (end_col, end_row)) with 1-indexed values.
     """
@@ -108,18 +114,26 @@ def _parse_cell_range(range_str: str) -> tuple[tuple[int, int], tuple[int, int]]
         else:
             end_col += char
 
+    start_row_num = int(start_row) if start_row else 1
+    if end_row:
+        end_row_num = int(end_row)
+    elif max_row is not None:
+        end_row_num = max_row
+    else:
+        raise ValueError(f"whole-column range {range_str!r} requires a row extent")
+
     return (
-        (_col_name_to_num(start_col), int(start_row)),
-        (_col_name_to_num(end_col), int(end_row)),
+        (_col_name_to_num(start_col), start_row_num),
+        (_col_name_to_num(end_col), end_row_num),
     )
 
 
-def _generate_cell_names(range_str: str) -> list[str]:
+def _generate_cell_names(range_str: str, max_row: int | None = None) -> list[str]:
     """Generate a list of all cell names in the specified range."""
     if ":" not in range_str:
         return [range_str]
 
-    (start_col, start_row), (end_col, end_row) = _parse_cell_range(range_str)
+    (start_col, start_row), (end_col, end_row) = _parse_cell_range(range_str, max_row)
     columns = [_col_num_to_name(i) for i in range(start_col, end_col + 1)]
     return [f"{col}{row}" for col in columns for row in range(start_row, end_row + 1)]
 
@@ -210,9 +224,11 @@ def _parse_sheet_cell_ranges(
         part = part.strip()
 
         if "!" in part:
-            # Try parsing with openpyxl's regex first
+            # Try parsing with openpyxl's regex first. An empty cells group means
+            # the match stopped at a stray quote before the range (e.g.
+            # "'Sheet1'!'A2:A85"); fall through to the quote-stripping fallback.
             match = SHEETRANGE_RE.match(part)
-            if match:
+            if match and match.group("cells"):
                 sheet_name = match.group("quoted") or match.group("notquoted")
                 # Unescape doubled quotes
                 sheet_name = sheet_name.replace("''", "'")
@@ -265,7 +281,8 @@ def _compare_cells(
     ws_golden = wb_golden[sheet_name]
     ws_output = wb_output[sheet_name]
 
-    cell_names = _generate_cell_names(cell_range)
+    max_row = max(ws_golden.max_row, ws_output.max_row)
+    cell_names = _generate_cell_names(cell_range, max_row)
 
     for cell_name in cell_names:
         cell_golden = ws_golden[cell_name]
