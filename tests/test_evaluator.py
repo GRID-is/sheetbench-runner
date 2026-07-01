@@ -125,6 +125,14 @@ class TestGenerateCellNames:
         names = _generate_cell_names("A1:B2")
         assert set(names) == {"A1", "A2", "B1", "B2"}
 
+    def test_whole_column_range_expands_to_max_row(self):
+        names = _generate_cell_names("A:G", max_row=1)
+        assert names == ["A1", "B1", "C1", "D1", "E1", "F1", "G1"]
+
+    def test_whole_column_range_multi_row(self):
+        names = _generate_cell_names("A:B", max_row=3)
+        assert set(names) == {"A1", "A2", "A3", "B1", "B2", "B3"}
+
 
 class TestParseSheetCellRanges:
     """Tests for parsing answer_position into (sheet_name, cell_range) tuples."""
@@ -243,6 +251,14 @@ class TestParseSheetCellRanges:
 
         # Assert
         assert result == [("[workbook2.xlsx]sheet 2", "B4")]
+
+    def test_stray_quote_before_range(self):
+        """A stray leading quote before the range is stripped so it parses."""
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges("'Sheet1'!'A2:A85", answer_sheet="Sheet1")
+
+        # Assert
+        assert result == [("Sheet1", "A2:A85")]
 
     # ============================================================
     # Error cases
