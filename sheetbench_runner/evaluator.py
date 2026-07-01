@@ -248,7 +248,10 @@ def _parse_sheet_cell_ranges(
                 else:
                     sheet_name = sheet_name.strip("'\"")
         elif answer_sheet:
-            sheet_name = answer_sheet.strip().strip("'\"")
+            # answer_sheet may be a comma-separated list of sheets; use the first
+            # (matching the built-in grader). Split outside quotes so a quoted
+            # sheet name that itself contains a comma ('Revenue, 2024') stays intact.
+            sheet_name = _split_on_comma_outside_quotes(answer_sheet)[0].strip().strip("'\"")
             cell_range = part
         elif fallback_sheet_name:
             sheet_name = fallback_sheet_name
