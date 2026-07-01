@@ -172,6 +172,18 @@ class TestParseSheetCellRanges:
         # Assert
         assert result == [("DefaultSheet", "A1:B10")]
 
+    def test_answer_sheet_comma_separated_uses_first(self):
+        # answer_sheet may be a comma-separated list of sheets; match the built-in
+        # grader (evaluation_verified.py) and use the first (task 60-7).
+        # Arrange & Act
+        result = _parse_sheet_cell_ranges(
+            "A3:E11",
+            answer_sheet="Consolidated Tracker,Existing Task,Additions,Retired",
+        )
+
+        # Assert
+        assert result == [("Consolidated Tracker", "A3:E11")]
+
     # ============================================================
     # Tests for sheet names containing commas
     # These verify that quoted sheet names with commas are parsed correctly.
