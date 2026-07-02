@@ -6,26 +6,39 @@ from sheetbench_runner.entities import Task
 from sheetbench_runner.prompt import build_prompt
 
 
-def test_build_prompt_with_all_fields(sample_task: Task):
-    """Test prompt building with all optional fields present."""
+def test_build_prompt_withholds_extra_hints():
+    """answer_sheet and data_position must never leak into the prompt.
+
+    The built-in SpreadsheetBench inference scripts surface neither field, so
+    surfacing them would make our prompt more revealing than the reference.
+    Sentinel values guard against a coincidental substring match.
+    """
     # Arrange
+    task = Task(
+        id="13-1",
+        instruction="Combine the data from columns A and B into column C",
+        spreadsheet_path="spreadsheet/13-1",
+        instruction_type="Sheet-Level Manipulation",
+        answer_position="C1:C10",
+        answer_sheet="SHEET_SENTINEL",
+        data_position="DATAPOS_SENTINEL",
+    )
     workbook_id = "wb-13-1"
 
     # Act
-    prompt = build_prompt(sample_task, workbook_id)
+    prompt = build_prompt(task, workbook_id)
 
     # Assert
     assert "You are a spreadsheet expert" in prompt
-    assert sample_task.instruction in prompt
+    assert task.instruction in prompt
     assert workbook_id in prompt
-    assert sample_task.instruction_type in prompt
-    assert sample_task.answer_position in prompt
+    assert task.instruction_type in prompt
+    assert task.answer_position in prompt
 
-    # Check optional fields are included
-    assert "### answer_sheet" in prompt
-    assert sample_task.answer_sheet in prompt
-    assert "### data_position" in prompt
-    assert sample_task.data_position in prompt
+    assert "### answer_sheet" not in prompt
+    assert "SHEET_SENTINEL" not in prompt
+    assert "### data_position" not in prompt
+    assert "DATAPOS_SENTINEL" not in prompt
 
 
 def test_build_prompt_minimal(sample_task_minimal: Task):

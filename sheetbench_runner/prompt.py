@@ -2,7 +2,10 @@
 
 from .entities import Task
 
-# The standard prompt format for SpreadsheetBench tasks
+# Mirrors the fields surfaced by the built-in SpreadsheetBench inference scripts
+# (instruction, instruction_type, answer_position); workbook_id replaces the
+# file-path fields. answer_sheet and data_position are intentionally withheld so
+# the prompt is never more revealing than the reference benchmark.
 PROMPT_TEMPLATE = """You are a spreadsheet expert.
 
 You need to solve the given spreadsheet manipulation question, which contains the following \
@@ -29,7 +32,7 @@ Below is the spreadsheet manipulation question you need to solve:
 
 ### answer_position
 {answer_position}
-{extra_context}"""
+"""
 
 
 def build_prompt(task: Task, workbook_id: str) -> str:
@@ -49,21 +52,9 @@ def build_prompt(task: Task, workbook_id: str) -> str:
     if not workbook_id or not workbook_id.strip():
         raise ValueError("workbook_id cannot be empty")
 
-    # Build extra context from optional fields
-    extra_lines: list[str] = []
-    if task.answer_sheet:
-        extra_lines.append(f"\n### answer_sheet\n{task.answer_sheet}")
-    if task.data_position:
-        extra_lines.append(f"\n### data_position\n{task.data_position}")
-
-    extra_context = "\n".join(extra_lines)
-    if extra_context:
-        extra_context += "\n"
-
     return PROMPT_TEMPLATE.format(
         instruction=task.instruction,
         workbook_id=workbook_id,
         instruction_type=task.instruction_type,
         answer_position=task.answer_position,
-        extra_context=extra_context,
     )
