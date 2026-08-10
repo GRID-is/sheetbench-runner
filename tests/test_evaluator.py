@@ -367,6 +367,77 @@ def test_evaluator_fail_value_mismatch(evaluator_setup, temp_dir: Path):
     assert "999" in result.message
 
 
+@pytest.fixture
+def evaluator_setup_v2(temp_dir: Path):
+    """Set up a v2 dataset dir: golden named by golden_response_path, not task id."""
+    dataset_dir = temp_dir / "dataset-v2"
+    project_dir = dataset_dir / "spreadsheet" / "01_bond_accounting"
+    project_dir.mkdir(parents=True)
+
+    golden_wb = openpyxl.Workbook()
+    golden_ws = golden_wb.active
+    golden_ws.title = "BondAccounting"
+    golden_ws["B2"] = 100
+    golden_ws["B3"] = 200
+    golden_wb.save(project_dir / "01_01_golden.xlsx")
+
+    return dataset_dir
+
+
+class TestV2Evaluator:
+    """v2 goldens are named by the dataset, so the id-derived v1 path never matches."""
+
+    def _v2_task(self) -> Task:
+        return Task(
+            id="01_01",
+            instruction="Complete the schedule",
+            spreadsheet_path="spreadsheet/01_bond_accounting/01_01_input.xlsx",
+            answer_position="'BondAccounting'!B2:B3",
+            golden_response_path="spreadsheet/01_bond_accounting/01_01_golden.xlsx",
+        )
+
+    def test_finds_golden_via_golden_response_path(self, evaluator_setup_v2, temp_dir: Path):
+        """Evaluation resolves the golden from golden_response_path and passes."""
+        # Arrange
+        output_wb = openpyxl.Workbook()
+        output_ws = output_wb.active
+        output_ws.title = "BondAccounting"
+        output_ws["B2"] = 100
+        output_ws["B3"] = 200
+        output_path = temp_dir / "output-v2.xlsx"
+        output_wb.save(output_path)
+
+        evaluator = Evaluator(evaluator_setup_v2)
+
+        # Act
+        result = evaluator.evaluate(self._v2_task(), output_path)
+
+        # Assert
+        assert result.passed is True, result.message
+        assert result.message == ""
+
+    def test_reports_mismatch_against_v2_golden(self, evaluator_setup_v2, temp_dir: Path):
+        """A wrong value is reported, proving the v2 golden was actually loaded."""
+        # Arrange
+        output_wb = openpyxl.Workbook()
+        output_ws = output_wb.active
+        output_ws.title = "BondAccounting"
+        output_ws["B2"] = 100
+        output_ws["B3"] = 999  # Wrong!
+        output_path = temp_dir / "output-v2-bad.xlsx"
+        output_wb.save(output_path)
+
+        evaluator = Evaluator(evaluator_setup_v2)
+
+        # Act
+        result = evaluator.evaluate(self._v2_task(), output_path)
+
+        # Assert
+        assert result.passed is False
+        assert "B3" in result.message
+        assert "999" in result.message
+
+
 def test_evaluator_missing_output_file(evaluator_setup, temp_dir: Path):
     """Test evaluation fails when output file doesn't exist."""
     # Arrange

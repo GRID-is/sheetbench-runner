@@ -338,7 +338,7 @@ class Evaluator:
 
     def _get_golden_path(self, task: Task) -> Path:
         """Get the path to the golden file for a task."""
-        return self.dataset_path / "spreadsheet" / task.id / f"1_{task.id}_golden.xlsx"
+        return self.dataset_path / task.golden_relpath
 
     def _compare_workbooks(
         self, task: Task, golden_path: Path, output_path: Path

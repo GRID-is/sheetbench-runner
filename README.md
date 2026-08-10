@@ -50,6 +50,37 @@ sheetbench-runner \
 
 Runs are **resumable** — if interrupted, re-running the same command skips already-completed tasks and retries any that failed due to transient errors (5xx, timeouts).
 
+### SpreadsheetBench v2 datasets
+
+The v2 test set is split into category directories, each with its own `dataset.json`.
+Point `--dataset` at one category per run:
+
+```bash
+sheetbench-runner \
+  --dataset data/spreadsheetbench-v2/Template \
+  --run-dir data/runs/2026-08-10-template \
+  --concurrency 10
+```
+
+`Debugging`, `Financial_Model` and `Template` are supported. v2 entries reference
+their input workbook (`spreadsheet_path`) and golden file (`golden_response_path`)
+directly, have no `instruction_type`, and always sheet-qualify `answer_position`.
+The prompt for v2 tasks omits the `instruction_type` section accordingly; grading is
+the same exact-match cell comparison as v1.
+
+Caveats:
+
+- `Visualization` is **not** supported — its tasks are graded against a rubric
+  (`criteria`), not cell ranges, and need a different evaluator.
+- `Debugging` and `Financial_Model` answer ranges span entire workbooks
+  (4k–295k cells), and inputs differ from goldens in 1–22% of cells. With binary
+  exact-match grading, expect pass rates near zero; per-task failure messages in
+  `results.json` carry the first mismatching cell.
+- The five `Financial_Model/spreadsheet/06_Project DigiMark/*_input.xlsx` files
+  cannot be opened by openpyxl (malformed XML namespace). This does not affect the
+  runner — inputs are uploaded as raw bytes and only golden + output files are
+  parsed for evaluation.
+
 ### Re-evaluation
 
 If the evaluation logic changes (e.g. a parser fix for edge-case Excel references), you can re-evaluate existing output files without re-running inference:
