@@ -139,6 +139,8 @@ class TaskResult:
     output_file: str | None = None
     result: str | None = None  # "pass" | "fail"
     message: str = ""
+    regression_accuracy: float | None = None
+    modification_accuracy: float | None = None
     error: str | None = None  # For transient failures (not recorded to results.json)
     started_at: datetime | None = field(default=None, repr=False)
 
@@ -160,6 +162,10 @@ class TaskResult:
             d["result"] = self.result
         if self.message:
             d["message"] = self.message
+        if self.regression_accuracy is not None:
+            d["regression_accuracy"] = self.regression_accuracy
+        if self.modification_accuracy is not None:
+            d["modification_accuracy"] = self.modification_accuracy
         # Note: error field is intentionally NOT included - transient failures
         # should not be recorded so they get retried on resume
         return d

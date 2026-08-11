@@ -5,7 +5,7 @@ import pytest
 from openpyxl.styles import Font
 from openpyxl.styles.colors import Color
 
-from sheetbench_runner.entities import Task
+from sheetbench_runner.entities import Task, TaskResult
 from sheetbench_runner.evaluator import Evaluator
 from sheetbench_runner.evaluator_v2 import (
     _find_sheet,
@@ -441,3 +441,18 @@ class TestEvaluatorV2Dispatch:
         assert result.passed is True
         assert result.regression_accuracy == 1.0
         assert result.modification_accuracy == 1.0
+
+
+class TestTaskResultRatios:
+    def test_ratios_in_results_dict_when_set(self):
+        r = TaskResult(
+            task_id="01_01", result="fail", regression_accuracy=0.9987, modification_accuracy=0.5
+        )
+        d = r.to_results_dict()
+        assert d["regression_accuracy"] == 0.9987
+        assert d["modification_accuracy"] == 0.5
+
+    def test_ratios_omitted_when_none(self):
+        d = TaskResult(task_id="13-1", result="pass").to_results_dict()
+        assert "regression_accuracy" not in d
+        assert "modification_accuracy" not in d
