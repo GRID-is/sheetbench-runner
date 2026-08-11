@@ -17,6 +17,7 @@ from openpyxl.styles import Font
 from openpyxl.styles.colors import Color
 from openpyxl.worksheet.worksheet import Worksheet
 
+from .entities import EvaluationResult
 from .evaluator import _generate_cell_names, _transform_value
 
 _DISPLAY_EQUIVALENT_ERRORS = {"#DIV/0!", "#N/A"}
@@ -330,4 +331,87 @@ def compare_classified_cells(
         mod_correct,
         len(modification_cells),
         reg_errors + mod_errors,
+    )
+
+
+def compare_workbooks(
+    input_path: Path,
+    golden_path: Path,
+    output_path: Path,
+    ranges: list[tuple[str, str]],
+    with_font_color: bool = False,
+    with_formula: bool = False,
+) -> EvaluationResult:
+    """
+    Grade an output workbook against golden with the v2 regression/
+    modification semantics over pre-parsed (sheet_name, cell_range) tuples.
+
+    Pass rule: modification ratio 1.0 AND regression ratio 1.0, where a
+    regression ratio >= 0.998 (rounded to 4 decimals) snaps to 1.0. A group
+    with zero cells scores 0.0.
+    """
+    data_only = not with_formula
+    wb_input = openpyxl.load_workbook(filename=input_path, data_only=data_only)
+    wb_golden = openpyxl.load_workbook(filename=golden_path, data_only=data_only)
+    wb_output = openpyxl.load_workbook(filename=output_path, data_only=data_only)
+    formula_books = (
+        None if with_formula else _LazyFormulaWorkbooks(input_path, golden_path, output_path)
+    )
+
+    reg_correct = reg_total = mod_correct = mod_total = 0
+    errors: list[str] = []
+    try:
+        for sheet_name, cell_range in ranges:
+            regression, modification = classify_cells_by_modification(
+                wb_input,
+                wb_golden,
+                sheet_name,
+                cell_range,
+                with_font_color,
+                with_formula,
+                formula_books,
+            )
+            rc, rt, mc, mt, msgs = compare_classified_cells(
+                wb_golden,
+                wb_output,
+                sheet_name,
+                regression,
+                modification,
+                with_font_color,
+                with_formula,
+                formula_books,
+            )
+            reg_correct += rc
+            reg_total += rt
+            mod_correct += mc
+            mod_total += mt
+            errors.extend(msgs)
+    finally:
+        wb_input.close()
+        wb_golden.close()
+        wb_output.close()
+        if formula_books is not None:
+            formula_books.close()
+
+    reg_ratio = round(reg_correct / reg_total, 4) if reg_total else 0.0
+    mod_ratio = round(mod_correct / mod_total, 4) if mod_total else 0.0
+    if reg_ratio >= 0.998:
+        reg_ratio = 1.0
+    passed = reg_ratio == 1.0 and mod_ratio == 1.0
+
+    if passed:
+        message = ""
+    else:
+        first_error = next((m for m in errors if m), "")
+        counts = (
+            f"{reg_total - reg_correct}/{reg_total} regression and "
+            f"{mod_total - mod_correct}/{mod_total} modification cells wrong"
+        )
+        message = f"{first_error}; {counts}" if first_error else counts
+
+    return EvaluationResult(
+        passed=passed,
+        message=message,
+        regression_accuracy=reg_ratio,
+        modification_accuracy=mod_ratio,
     )

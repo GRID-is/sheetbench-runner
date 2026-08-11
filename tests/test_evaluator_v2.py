@@ -14,6 +14,7 @@ from sheetbench_runner.evaluator_v2 import (
     compare_cell_value,
     compare_classified_cells,
     compare_font_color,
+    compare_workbooks,
 )
 
 
@@ -250,3 +251,79 @@ class TestCompareClassifiedCells:
 
         compare_classified_cells(wb_gold, wb_out, "Model", ["A1"], [], False, False, books)
         assert books._books == {}  # nothing loaded
+
+
+class TestCompareWorkbooks:
+    def make_files(self, temp_dir, input_cells, golden_cells, output_cells):
+        return (
+            build_workbook(temp_dir / "in.xlsx", cells=input_cells),
+            build_workbook(temp_dir / "gold.xlsx", cells=golden_cells),
+            build_workbook(temp_dir / "out.xlsx", cells=output_cells),
+        )
+
+    def test_output_equals_golden_passes(self, temp_dir):
+        cells = {"A1": 1, "A2": 2, "A3": 3}
+        golden = {"A1": 1, "A2": 99, "A3": 3}
+        inp, gold, out = self.make_files(temp_dir, cells, golden, dict(golden))
+        result = compare_workbooks(inp, gold, out, [("Model", "A1:A3")])
+        assert result.passed is True
+        assert result.regression_accuracy == 1.0
+        assert result.modification_accuracy == 1.0
+        assert result.message == ""
+
+    def test_output_equals_input_fails_modification(self, temp_dir):
+        cells = {"A1": 1, "A2": 2, "A3": 3}
+        golden = {"A1": 1, "A2": 99, "A3": 3}
+        inp, gold, out = self.make_files(temp_dir, cells, golden, dict(cells))
+        result = compare_workbooks(inp, gold, out, [("Model", "A1:A3")])
+        assert result.passed is False
+        assert result.regression_accuracy == 1.0
+        assert result.modification_accuracy == 0.0
+        assert "Modification error at Model!A2" in result.message
+        assert "0/2 regression and 1/1 modification cells wrong" in result.message
+
+    def test_regression_snap_at_998(self, temp_dir):
+        # 500 A-cells with values; golden adds B1 as the modification cell.
+        # Empty B2..B500 classify as regression (None == None), so regression
+        # total = 999; output gets A1 wrong -> 998/999 = 0.999 -> snaps to 1.0
+        n = 500
+        cells = {f"A{i}": i for i in range(1, n + 1)}
+        golden = dict(cells)
+        golden["B1"] = 42
+        output = dict(golden)
+        output["A1"] = -1
+        inp, gold, out = self.make_files(temp_dir, cells, golden, output)
+        result = compare_workbooks(inp, gold, out, [("Model", f"A1:B{n}")])
+        assert result.regression_accuracy == 1.0
+        assert result.modification_accuracy == 1.0
+        assert result.passed is True
+
+    def test_regression_below_snap_fails(self, temp_dir):
+        # 3 of 100 regression cells wrong -> 0.97 -> no snap
+        cells = {f"A{i}": i for i in range(1, 101)}
+        golden = dict(cells)
+        output = dict(cells)
+        for i in (1, 2, 3):
+            output[f"A{i}"] = -i
+        inp, gold, out = self.make_files(temp_dir, cells, golden, output)
+        result = compare_workbooks(inp, gold, out, [("Model", "A1:A100")])
+        assert result.passed is False
+        assert result.regression_accuracy == 0.97
+
+    def test_zero_total_modification_group_scores_zero(self, temp_dir):
+        # Input already equals golden: no modification cells -> mod ratio 0.0,
+        # task can never pass (upstream behavior, ported verbatim)
+        cells = {"A1": 1}
+        inp, gold, out = self.make_files(temp_dir, cells, dict(cells), dict(cells))
+        result = compare_workbooks(inp, gold, out, [("Model", "A1")])
+        assert result.passed is False
+        assert result.regression_accuracy == 1.0
+        assert result.modification_accuracy == 0.0
+
+    def test_multiple_ranges_aggregate(self, temp_dir):
+        inp = build_workbook(temp_dir / "in.xlsx", cells={"A1": 1, "B1": 2})
+        gold = build_workbook(temp_dir / "gold.xlsx", cells={"A1": 10, "B1": 20})
+        out = build_workbook(temp_dir / "out.xlsx", cells={"A1": 10, "B1": 2})
+        result = compare_workbooks(inp, gold, out, [("Model", "A1"), ("Model", "B1")])
+        assert result.modification_accuracy == 0.5
+        assert result.passed is False

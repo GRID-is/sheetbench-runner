@@ -108,10 +108,16 @@ class InfuserUsage:
 
 @dataclass(frozen=True)
 class EvaluationResult:
-    """Result of evaluating a task output against the golden file."""
+    """Result of evaluating a task output against the golden file.
+
+    regression_accuracy/modification_accuracy are set only by the v2 grader
+    (None on the v1 path).
+    """
 
     passed: bool
     message: str = ""
+    regression_accuracy: float | None = None
+    modification_accuracy: float | None = None
 
 
 @dataclass
