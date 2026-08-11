@@ -65,21 +65,24 @@ sheetbench-runner \
 `Debugging`, `Financial_Model` and `Template` are supported. v2 entries reference
 their input workbook (`spreadsheet_path`) and golden file (`golden_response_path`)
 directly, have no `instruction_type`, and always sheet-qualify `answer_position`.
-The prompt for v2 tasks omits the `instruction_type` section accordingly; grading is
-the same exact-match cell comparison as v1.
+The prompt for v2 tasks omits the `instruction_type` section accordingly. Grading
+uses the upstream SpreadsheetBench 2 semantics: cells in `answer_position` are
+classified by comparing input to golden — unchanged cells are *regression* cells,
+changed cells are *modification* cells — and the output is compared to golden with
+1% numeric tolerance, "not meaningful" equivalence (`#DIV/0!`/`#N/A` vs `N/A`,
+`NM`, dashes), and a formula-level fallback for error values. A task passes when
+all modification cells match and ≥ 99.8% of regression cells are intact. Each
+v2 entry in `results.json` records `regression_accuracy` and
+`modification_accuracy`, and the run summary reports their averages.
 
 Caveats:
 
 - `Visualization` is **not** supported — its tasks are graded against a rubric
   (`criteria`), not cell ranges, and need a different evaluator.
-- `Debugging` and `Financial_Model` answer ranges span entire workbooks
-  (4k–295k cells), and inputs differ from goldens in 1–22% of cells. With binary
-  exact-match grading, expect pass rates near zero; per-task failure messages in
-  `results.json` carry the first mismatching cell.
 - The five `Financial_Model/spreadsheet/06_Project DigiMark/*_input.xlsx` files
-  cannot be opened by openpyxl (malformed XML namespace). This does not affect the
-  runner — inputs are uploaded as raw bytes and only golden + output files are
-  parsed for evaluation.
+  cannot be opened by openpyxl (malformed XML namespace). These tasks fail
+  evaluation with a load error and score 0.0 on both accuracy ratios — the same
+  outcome as the upstream evaluator, which also reads inputs with openpyxl.
 
 ### Re-evaluation
 
