@@ -9,6 +9,7 @@ evaluator.py (evaluator.py uses a function-local import for dispatch) so the
 helper imports below stay acyclic.
 """
 
+from pathlib import Path
 from typing import Any
 
 import openpyxl
@@ -16,7 +17,7 @@ from openpyxl.styles import Font
 from openpyxl.styles.colors import Color
 from openpyxl.worksheet.worksheet import Worksheet
 
-from .evaluator import _transform_value
+from .evaluator import _generate_cell_names, _transform_value
 
 _DISPLAY_EQUIVALENT_ERRORS = {"#DIV/0!", "#N/A"}
 # Finance "not meaningful" placeholders: golden #DIV/0! vs output "N/A" (via
@@ -184,3 +185,149 @@ def compare_font_color(font_golden: Font, font_output: Font) -> bool:
     rgb1 = _get_color_rgb(font_golden.color)
     rgb2 = _get_color_rgb(font_output.color)
     return rgb1[-6:] == rgb2[-6:]
+
+
+class _LazyFormulaWorkbooks:
+    """
+    data_only=False copies of the input/golden/output workbooks, loaded on
+    first use. The formula level is only needed when a cell shows an Excel
+    error value, so most tasks never pay the extra load.
+    """
+
+    def __init__(self, input_path: Path, golden_path: Path, output_path: Path) -> None:
+        self._paths: dict[str, Path] = {
+            "input": input_path,
+            "golden": golden_path,
+            "output": output_path,
+        }
+        self._books: dict[str, openpyxl.Workbook] = {}
+
+    def sheet(self, which: str, sheet_name: str) -> Worksheet | None:
+        if which not in self._books:
+            self._books[which] = openpyxl.load_workbook(
+                filename=self._paths[which], data_only=False
+            )
+        return _find_sheet(self._books[which], sheet_name)
+
+    def close(self) -> None:
+        for wb in self._books.values():
+            wb.close()
+
+
+def _compare_cells(cell1: Any, cell2: Any, with_font_color: bool, with_formula: bool) -> bool:
+    if with_formula:
+        return compare_cell_formula(cell1.value, cell2.value)
+    if with_font_color:
+        return compare_cell_value(cell1.value, cell2.value) and compare_font_color(
+            cell1.font, cell2.font
+        )
+    return compare_cell_value(cell1.value, cell2.value)
+
+
+def classify_cells_by_modification(
+    wb_input: openpyxl.Workbook,
+    wb_golden: openpyxl.Workbook,
+    sheet_name: str,
+    cell_range: str,
+    with_font_color: bool,
+    with_formula: bool,
+    formula_books: _LazyFormulaWorkbooks | None,
+) -> tuple[list[str], list[str]]:
+    """
+    Split the range into regression cells (input == golden, must stay
+    untouched) and modification cells (the task's actual work).
+    """
+    ws_input = _find_sheet(wb_input, sheet_name)
+    ws_golden = _find_sheet(wb_golden, sheet_name)
+    if ws_input is None or ws_golden is None:
+        return [], []
+
+    regression: list[str] = []
+    modification: list[str] = []
+    for cell_name in _generate_cell_names(cell_range):
+        cell_in, cell_gold = ws_input[cell_name], ws_golden[cell_name]
+        if (
+            not with_formula
+            and formula_books is not None
+            and (_has_excel_error(cell_in.value) or _has_excel_error(cell_gold.value))
+        ):
+            ws_in_f = formula_books.sheet("input", sheet_name)
+            ws_gold_f = formula_books.sheet("golden", sheet_name)
+            assert ws_in_f is not None and ws_gold_f is not None
+            is_same = compare_cell_formula(ws_in_f[cell_name].value, ws_gold_f[cell_name].value)
+        else:
+            is_same = _compare_cells(cell_in, cell_gold, with_font_color, with_formula)
+        (regression if is_same else modification).append(cell_name)
+
+    return regression, modification
+
+
+def compare_classified_cells(
+    wb_golden: openpyxl.Workbook,
+    wb_output: openpyxl.Workbook,
+    sheet_name: str,
+    regression_cells: list[str],
+    modification_cells: list[str],
+    with_font_color: bool,
+    with_formula: bool,
+    formula_books: _LazyFormulaWorkbooks | None,
+) -> tuple[int, int, int, int, list[str]]:
+    """
+    Compare output vs golden for both cell groups.
+    Returns (reg_correct, reg_total, mod_correct, mod_total, error_messages).
+    A sheet missing from the output scores all its cells wrong.
+    """
+    if _find_sheet(wb_output, sheet_name) is None:
+        return (
+            0,
+            len(regression_cells),
+            0,
+            len(modification_cells),
+            [f"{sheet_name} worksheet not found"],
+        )
+
+    ws_golden = _find_sheet(wb_golden, sheet_name)
+    ws_output = _find_sheet(wb_output, sheet_name)
+
+    def count_correct(cells: list[str], label: str) -> tuple[int, list[str]]:
+        correct = 0
+        errors: list[str] = []
+        for name in cells:
+            # Narrowed here (not above) so an empty `cells` list never
+            # dereferences a None sheet, matching upstream's lazy access.
+            assert ws_golden is not None and ws_output is not None
+            cell_gold, cell_out = ws_golden[name], ws_output[name]
+            if (
+                not with_formula
+                and formula_books is not None
+                and (_has_excel_error(cell_gold.value) or _has_excel_error(cell_out.value))
+            ):
+                ws_gold_f = formula_books.sheet("golden", sheet_name)
+                ws_out_f = formula_books.sheet("output", sheet_name)
+                assert ws_gold_f is not None and ws_out_f is not None
+                matched = compare_cell_formula(ws_gold_f[name].value, ws_out_f[name].value)
+            else:
+                matched = _compare_cells(cell_gold, cell_out, with_font_color, with_formula)
+            if matched:
+                correct += 1
+            else:
+                gold_val, out_val = cell_gold.value, cell_out.value
+                if hasattr(gold_val, "text"):
+                    gold_val = gold_val.text
+                if hasattr(out_val, "text"):
+                    out_val = out_val.text
+                errors.append(
+                    f"{label} error at {sheet_name}!{name}: answer={gold_val}, output={out_val}"
+                )
+        return correct, errors
+
+    reg_correct, reg_errors = count_correct(regression_cells, "Regression")
+    mod_correct, mod_errors = count_correct(modification_cells, "Modification")
+
+    return (
+        reg_correct,
+        len(regression_cells),
+        mod_correct,
+        len(modification_cells),
+        reg_errors + mod_errors,
+    )

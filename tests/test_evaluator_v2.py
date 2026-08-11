@@ -8,10 +8,26 @@ from openpyxl.styles.colors import Color
 from sheetbench_runner.evaluator_v2 import (
     _find_sheet,
     _has_excel_error,
+    _LazyFormulaWorkbooks,
+    classify_cells_by_modification,
     compare_cell_formula,
     compare_cell_value,
+    compare_classified_cells,
     compare_font_color,
 )
+
+
+def build_workbook(path, sheet_name="Model", cells=None, fonts=None):
+    """Write an xlsx with the given {cell: value} and optional {cell: Font}."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = sheet_name
+    for cell, value in (cells or {}).items():
+        ws[cell] = value
+    for cell, font in (fonts or {}).items():
+        ws[cell].font = font
+    wb.save(path)
+    return path
 
 
 class TestCompareCellValue:
@@ -151,3 +167,86 @@ class TestCompareFontColor:
         # Positive tint lightens toward white: 4472C4 at tint 0.5 -> A1B8E1
         themed = Font(color=Color(theme=4, tint=0.5))
         assert compare_font_color(themed, Font(color="FFA1B8E1")) is True
+
+    def test_theme_color_with_negative_tint(self):
+        # Negative tint darkens: 4472C4 at tint -0.5 -> 223962
+        # int(0x44*0.5)=0x22, int(0x72*0.5)=0x39, int(0xC4*0.5)=0x62
+        themed = Font(color=Color(theme=4, tint=-0.5))
+        assert compare_font_color(themed, Font(color="FF223962")) is True
+
+
+class TestClassifyCells:
+    def test_split_regression_vs_modification(self, temp_dir):
+        input_path = build_workbook(temp_dir / "in.xlsx", cells={"A1": 1, "A2": 2, "A3": 3})
+        golden_path = build_workbook(temp_dir / "gold.xlsx", cells={"A1": 1, "A2": 99, "A3": 3})
+        wb_in = openpyxl.load_workbook(input_path, data_only=True)
+        wb_gold = openpyxl.load_workbook(golden_path, data_only=True)
+
+        regression, modification = classify_cells_by_modification(
+            wb_in, wb_gold, "Model", "A1:A3", False, False, None
+        )
+        assert regression == ["A1", "A3"]
+        assert modification == ["A2"]
+
+    def test_missing_sheet_contributes_no_cells(self, temp_dir):
+        input_path = build_workbook(temp_dir / "in.xlsx", sheet_name="Other")
+        golden_path = build_workbook(temp_dir / "gold.xlsx")
+        wb_in = openpyxl.load_workbook(input_path, data_only=True)
+        wb_gold = openpyxl.load_workbook(golden_path, data_only=True)
+
+        regression, modification = classify_cells_by_modification(
+            wb_in, wb_gold, "Model", "A1:A3", False, False, None
+        )
+        assert regression == [] and modification == []
+
+
+class TestCompareClassifiedCells:
+    def test_counts_and_error_messages(self, temp_dir):
+        golden_path = build_workbook(temp_dir / "gold.xlsx", cells={"A1": 1, "A2": 99, "A3": 3})
+        output_path = build_workbook(temp_dir / "out.xlsx", cells={"A1": 1, "A2": 98, "A3": 4})
+        wb_gold = openpyxl.load_workbook(golden_path, data_only=True)
+        wb_out = openpyxl.load_workbook(output_path, data_only=True)
+
+        rc, rt, mc, mt, errors = compare_classified_cells(
+            wb_gold, wb_out, "Model", ["A1", "A3"], ["A2"], False, False, None
+        )
+        assert (rc, rt) == (1, 2)  # A1 right, A3 wrong (3 vs 4)
+        assert (mc, mt) == (0, 1)  # A2: 98 vs 99 is 1/99 = 1.01% off, outside 1%
+        assert any("Regression error at Model!A3" in e for e in errors)
+        assert any("Modification error at Model!A2" in e for e in errors)
+
+    def test_missing_output_sheet_scores_all_wrong(self, temp_dir):
+        golden_path = build_workbook(temp_dir / "gold.xlsx", cells={"A1": 1})
+        output_path = build_workbook(temp_dir / "out.xlsx", sheet_name="Other")
+        wb_gold = openpyxl.load_workbook(golden_path, data_only=True)
+        wb_out = openpyxl.load_workbook(output_path, data_only=True)
+
+        rc, rt, mc, mt, errors = compare_classified_cells(
+            wb_gold, wb_out, "Model", ["A1"], [], False, False, None
+        )
+        assert (rc, rt, mc, mt) == (0, 1, 0, 0)
+        assert errors == ["Model worksheet not found"]
+
+    def test_error_value_falls_back_to_formula_compare(self, temp_dir):
+        # Golden and output both show #DIV/0! stored as literal strings; the
+        # error triggers the formula-level fallback which compares equal.
+        golden_path = build_workbook(temp_dir / "gold.xlsx", cells={"A1": "#DIV/0!"})
+        output_path = build_workbook(temp_dir / "out.xlsx", cells={"A1": "#DIV/0!"})
+        wb_gold = openpyxl.load_workbook(golden_path, data_only=True)
+        wb_out = openpyxl.load_workbook(output_path, data_only=True)
+        books = _LazyFormulaWorkbooks(None, golden_path, output_path)
+
+        rc, rt, mc, mt, errors = compare_classified_cells(
+            wb_gold, wb_out, "Model", [], ["A1"], False, False, books
+        )
+        assert (mc, mt) == (1, 1)
+
+    def test_lazy_books_not_loaded_without_errors(self, temp_dir):
+        golden_path = build_workbook(temp_dir / "gold.xlsx", cells={"A1": 1})
+        output_path = build_workbook(temp_dir / "out.xlsx", cells={"A1": 1})
+        wb_gold = openpyxl.load_workbook(golden_path, data_only=True)
+        wb_out = openpyxl.load_workbook(output_path, data_only=True)
+        books = _LazyFormulaWorkbooks(None, golden_path, output_path)
+
+        compare_classified_cells(wb_gold, wb_out, "Model", ["A1"], [], False, False, books)
+        assert books._books == {}  # nothing loaded
