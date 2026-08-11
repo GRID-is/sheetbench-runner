@@ -3,12 +3,14 @@
 import openpyxl
 import pytest
 from openpyxl.styles import Font
+from openpyxl.styles.colors import Color
 
 from sheetbench_runner.evaluator_v2 import (
     _find_sheet,
     _has_excel_error,
     compare_cell_formula,
     compare_cell_value,
+    compare_font_color,
 )
 
 
@@ -125,3 +127,27 @@ class TestFindSheet:
         assert _find_sheet(wb, "My Sheet ") is ws
         assert _find_sheet(wb, "my sheet") is ws
         assert _find_sheet(wb, "Other") is None
+
+
+class TestCompareFontColor:
+    def test_same_rgb_matches(self):
+        assert compare_font_color(Font(color="FFFF0000"), Font(color="FFFF0000")) is True
+
+    def test_alpha_channel_ignored(self):
+        assert compare_font_color(Font(color="00FF0000"), Font(color="FFFF0000")) is True
+
+    def test_different_rgb_fails(self):
+        assert compare_font_color(Font(color="FFFF0000"), Font(color="FF00FF00")) is False
+
+    def test_unset_colors_match(self):
+        assert compare_font_color(Font(), Font()) is True
+
+    def test_theme_color_resolves_to_rgb(self):
+        # Theme 4 (accent1) is 4472C4 in the default Office theme
+        themed = Font(color=Color(theme=4, tint=0.0))
+        assert compare_font_color(themed, Font(color="FF4472C4")) is True
+
+    def test_theme_color_with_tint(self):
+        # Positive tint lightens toward white: 4472C4 at tint 0.5 -> A1B8E1
+        themed = Font(color=Color(theme=4, tint=0.5))
+        assert compare_font_color(themed, Font(color="FFA1B8E1")) is True

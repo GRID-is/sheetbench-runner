@@ -12,9 +12,11 @@ helper imports below stay acyclic.
 from typing import Any
 
 import openpyxl
+from openpyxl.styles import Font
+from openpyxl.styles.colors import Color
 from openpyxl.worksheet.worksheet import Worksheet
 
-from .evaluator import _generate_cell_names, _transform_value
+from .evaluator import _transform_value
 
 _DISPLAY_EQUIVALENT_ERRORS = {"#DIV/0!", "#N/A"}
 # Finance "not meaningful" placeholders: golden #DIV/0! vs output "N/A" (via
@@ -131,3 +133,54 @@ def compare_cell_formula(f1: Any, f2: Any) -> bool:
         return True
 
     return compare_cell_value(f1, f2)
+
+
+# Standard Excel theme color map (Office default theme)
+_THEME_COLORS = [
+    "FFFFFF",  # 0: lt1 (white/light background)
+    "000000",  # 1: dk1 (black/dark text)
+    "E7E6E6",  # 2: lt2 (light gray)
+    "44546A",  # 3: dk2 (dark blue-gray)
+    "4472C4",  # 4: accent1
+    "ED7D31",  # 5: accent2
+    "A5A5A5",  # 6: accent3
+    "FFC000",  # 7: accent4
+    "5B9BD5",  # 8: accent5
+    "70AD47",  # 9: accent6
+]
+
+
+def _get_color_rgb(color: Color | None) -> str:
+    """Extract RGB from a color object, resolving theme colors to RGB."""
+    if not color:
+        return "00000000"
+    # openpyxl descriptors return validator objects when the attribute isn't
+    # set, so check color.type rather than testing color.theme/color.rgb
+    if color.type == "rgb" and isinstance(color.rgb, str):
+        return color.rgb
+    if color.type == "theme":
+        theme_idx = color.theme
+        if 0 <= theme_idx < len(_THEME_COLORS):
+            base = _THEME_COLORS[theme_idx]
+            tint = float(color.tint) if color.tint else 0.0
+            if tint != 0:
+                r, g, b = int(base[0:2], 16), int(base[2:4], 16), int(base[4:6], 16)
+                if tint > 0:
+                    r = int(r + (255 - r) * tint)
+                    g = int(g + (255 - g) * tint)
+                    b = int(b + (255 - b) * tint)
+                else:
+                    r = int(r * (1 + tint))
+                    g = int(g * (1 + tint))
+                    b = int(b * (1 + tint))
+                r, g, b = min(255, max(0, r)), min(255, max(0, g)), min(255, max(0, b))
+                base = f"{r:02X}{g:02X}{b:02X}"
+            return "FF" + base
+    return "00000000"
+
+
+def compare_font_color(font_golden: Font, font_output: Font) -> bool:
+    """Compare font colors on RGB only, ignoring the alpha channel."""
+    rgb1 = _get_color_rgb(font_golden.color)
+    rgb2 = _get_color_rgb(font_output.color)
+    return rgb1[-6:] == rgb2[-6:]
