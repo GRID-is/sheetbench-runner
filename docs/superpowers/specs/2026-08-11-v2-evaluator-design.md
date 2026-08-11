@@ -66,7 +66,10 @@ A close port of the upstream functions, kept structurally parallel to
 
 Range parsing reuses the existing `_parse_sheet_cell_ranges` from `evaluator.py`
 (a superset of upstream's parser; v2 positions are always sheet-qualified, and
-both parsers handle quoted sheet names containing commas identically).
+both parsers handle quoted sheet names containing commas identically). Cell-name
+expansion reuses the existing `_generate_cell_names` with the sheets' max row as
+the extent; all v2 answer ranges are fully bounded (verified across all three
+datasets), so this is equivalent to upstream's `generate_cell_names`.
 
 ### Dispatch and comparison modes
 
@@ -87,8 +90,10 @@ load time on clean workbooks.
 ### Scoring and pass rule
 
 Per task, aggregate regression and modification `correct/total` across all answer
-ranges, then compute ratios rounded to 4 decimals (upstream rounding). A
-regression ratio ≥ 0.998 snaps to 1.0; the modification ratio gets no slack.
+ranges, then compute ratios rounded to 4 decimals (upstream rounding). A group
+with zero cells scores 0.0, as upstream does — a task with an empty modification
+group can never pass; ported verbatim for comparability. A regression ratio
+≥ 0.998 snaps to 1.0; the modification ratio gets no slack.
 `passed = (regression == 1.0 and modification == 1.0)`.
 
 ### Result plumbing
@@ -101,7 +106,9 @@ regression ratio ≥ 0.998 snaps to 1.0; the modification ratio gets no slack.
   plus mismatch counts per group, e.g.
   `"…; 3/1200 regression and 41/85 modification cells wrong"`.
 - The runner's per-task log line and end-of-run summary include average
-  regression/modification accuracy for v2 tasks.
+  regression/modification accuracy for v2 tasks. To stay comparable with
+  upstream's summary numbers, the averages exclude missing-output tasks but
+  include load-error tasks as 0.0.
 - `--reevaluate` needs no changes and is the validation path: regrade an existing
   Financial_Model run dir and compare per-task results against upstream's
   evaluator run on the same outputs.
