@@ -369,7 +369,13 @@ def test_evaluator_fail_value_mismatch(evaluator_setup, temp_dir: Path):
 
 @pytest.fixture
 def evaluator_setup_v2(temp_dir: Path):
-    """Set up a v2 dataset dir: golden named by golden_response_path, not task id."""
+    """
+    Set up a v2 dataset dir: golden named by golden_response_path, not task id.
+
+    Also writes the input workbook the v2 grader classifies against: B2
+    matches golden (a regression cell) and B3 differs (the modification
+    cell), so real v2 regression/modification grading exercises both groups.
+    """
     dataset_dir = temp_dir / "dataset-v2"
     project_dir = dataset_dir / "spreadsheet" / "01_bond_accounting"
     project_dir.mkdir(parents=True)
@@ -381,11 +387,21 @@ def evaluator_setup_v2(temp_dir: Path):
     golden_ws["B3"] = 200
     golden_wb.save(project_dir / "01_01_golden.xlsx")
 
+    input_wb = openpyxl.Workbook()
+    input_ws = input_wb.active
+    input_ws.title = "BondAccounting"
+    input_ws["B2"] = 100
+    input_ws["B3"] = 50
+    input_wb.save(project_dir / "01_01_input.xlsx")
+
     return dataset_dir
 
 
 class TestV2Evaluator:
-    """v2 goldens are named by the dataset, so the id-derived v1 path never matches."""
+    """v2 goldens are named by the dataset, so the id-derived v1 path never matches.
+
+    Grading itself uses real v2 regression/modification semantics.
+    """
 
     def _v2_task(self) -> Task:
         return Task(

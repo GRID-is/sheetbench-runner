@@ -10,7 +10,7 @@ helper imports below stay acyclic.
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import openpyxl
 from openpyxl.styles import Font
@@ -203,7 +203,9 @@ class _LazyFormulaWorkbooks:
         }
         self._books: dict[str, openpyxl.Workbook] = {}
 
-    def sheet(self, which: str, sheet_name: str) -> Worksheet | None:
+    def sheet(
+        self, which: Literal["input", "golden", "output"], sheet_name: str
+    ) -> Worksheet | None:
         if which not in self._books:
             self._books[which] = openpyxl.load_workbook(
                 filename=self._paths[which], data_only=False
@@ -351,9 +353,9 @@ def compare_workbooks(
     with zero cells scores 0.0.
     """
     data_only = not with_formula
-    wb_input = openpyxl.load_workbook(filename=input_path, data_only=data_only)
-    wb_golden = openpyxl.load_workbook(filename=golden_path, data_only=data_only)
-    wb_output = openpyxl.load_workbook(filename=output_path, data_only=data_only)
+    wb_input: openpyxl.Workbook | None = None
+    wb_golden: openpyxl.Workbook | None = None
+    wb_output: openpyxl.Workbook | None = None
     formula_books = (
         None if with_formula else _LazyFormulaWorkbooks(input_path, golden_path, output_path)
     )
@@ -361,6 +363,9 @@ def compare_workbooks(
     reg_correct = reg_total = mod_correct = mod_total = 0
     errors: list[str] = []
     try:
+        wb_input = openpyxl.load_workbook(filename=input_path, data_only=data_only)
+        wb_golden = openpyxl.load_workbook(filename=golden_path, data_only=data_only)
+        wb_output = openpyxl.load_workbook(filename=output_path, data_only=data_only)
         for sheet_name, cell_range in ranges:
             regression, modification = classify_cells_by_modification(
                 wb_input,
@@ -387,9 +392,12 @@ def compare_workbooks(
             mod_total += mt
             errors.extend(msgs)
     finally:
-        wb_input.close()
-        wb_golden.close()
-        wb_output.close()
+        if wb_input is not None:
+            wb_input.close()
+        if wb_golden is not None:
+            wb_golden.close()
+        if wb_output is not None:
+            wb_output.close()
         if formula_books is not None:
             formula_books.close()
 

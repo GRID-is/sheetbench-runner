@@ -317,6 +317,10 @@ class Evaluator:
         """
         Evaluate a task output against its golden file.
 
+        v1 tasks use strict exact-match grading; v2 tasks (marked by
+        golden_response_path) use the SpreadsheetBench 2 regression/
+        modification semantics.
+
         Args:
             task: The task that was executed
             output_path: Path to the output spreadsheet file
@@ -327,14 +331,57 @@ class Evaluator:
         if not output_path.exists():
             return EvaluationResult(passed=False, message="Output file not found")
 
+        is_v2 = task.golden_response_path is not None
         golden_path = self._get_golden_path(task)
         if not golden_path.exists():
-            return EvaluationResult(passed=False, message=f"Golden file not found: {golden_path}")
+            return EvaluationResult(
+                passed=False,
+                message=f"Golden file not found: {golden_path}",
+                # v2 load-error tasks score 0.0 so they count in the averages,
+                # matching upstream's summary math
+                regression_accuracy=0.0 if is_v2 else None,
+                modification_accuracy=0.0 if is_v2 else None,
+            )
+
+        if is_v2:
+            return self._evaluate_v2(task, golden_path, output_path)
 
         try:
             return self._compare_workbooks(task, golden_path, output_path)
         except Exception as e:
             return EvaluationResult(passed=False, message=f"Evaluation error: {e}")
+
+    def _evaluate_v2(self, task: Task, golden_path: Path, output_path: Path) -> EvaluationResult:
+        """Grade a v2 task with the upstream SpreadsheetBench 2 semantics."""
+        # Local import: evaluator_v2 imports helpers from this module at load
+        # time, so importing it at module level here would create a cycle.
+        from . import evaluator_v2
+
+        with_font_color = with_formula = False
+        if "Debugging" in self.dataset_path.name:
+            if "Color" in task.spreadsheet_path:
+                with_font_color = True
+            if "Embedded" in task.spreadsheet_path:
+                with_formula = True
+
+        try:
+            ranges = _parse_sheet_cell_ranges(task.answer_position, task.answer_sheet)
+            return evaluator_v2.compare_workbooks(
+                self.dataset_path / task.input_relpath,
+                golden_path,
+                output_path,
+                ranges,
+                with_font_color=with_font_color,
+                with_formula=with_formula,
+            )
+        except Exception as e:
+            # Load-error tasks score 0.0, matching upstream's summary math
+            return EvaluationResult(
+                passed=False,
+                message=f"Evaluation error: {e}",
+                regression_accuracy=0.0,
+                modification_accuracy=0.0,
+            )
 
     def _get_golden_path(self, task: Task) -> Path:
         """Get the path to the golden file for a task."""

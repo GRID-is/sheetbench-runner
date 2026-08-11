@@ -5,6 +5,8 @@ import pytest
 from openpyxl.styles import Font
 from openpyxl.styles.colors import Color
 
+from sheetbench_runner.entities import Task
+from sheetbench_runner.evaluator import Evaluator
 from sheetbench_runner.evaluator_v2 import (
     _find_sheet,
     _has_excel_error,
@@ -327,3 +329,115 @@ class TestCompareWorkbooks:
         result = compare_workbooks(inp, gold, out, [("Model", "A1"), ("Model", "B1")])
         assert result.modification_accuracy == 0.5
         assert result.passed is False
+
+
+def make_v2_task(
+    dataset_dir,
+    input_cells,
+    golden_cells,
+    answer_position="'Model'!A1:A3",
+    input_name="01_01_input.xlsx",
+):
+    """Build a v2 dataset dir with one task's files and return the Task."""
+    sheets_dir = dataset_dir / "spreadsheet" / "01_proj"
+    sheets_dir.mkdir(parents=True, exist_ok=True)
+    build_workbook(sheets_dir / input_name, cells=input_cells)
+    build_workbook(sheets_dir / "01_golden.xlsx", cells=golden_cells)
+    return Task(
+        id="01_01",
+        instruction="test",
+        spreadsheet_path=f"spreadsheet/01_proj/{input_name}",
+        answer_position=answer_position,
+        golden_response_path="spreadsheet/01_proj/01_golden.xlsx",
+    )
+
+
+class TestEvaluatorV2Dispatch:
+    def test_v2_task_graded_with_v2_semantics(self, temp_dir):
+        # Output differs from golden within 1% -> v2 passes where v1 would fail
+        task = make_v2_task(
+            temp_dir,
+            input_cells={"A1": 1, "A2": 2, "A3": 3},
+            golden_cells={"A1": 1, "A2": 100.0, "A3": 3},
+        )
+        output = build_workbook(temp_dir / "out.xlsx", cells={"A1": 1, "A2": 100.5, "A3": 3})
+
+        result = Evaluator(temp_dir).evaluate(task, output)
+        assert result.passed is True
+        assert result.regression_accuracy == 1.0
+        assert result.modification_accuracy == 1.0
+
+    def test_v1_task_untouched(self, temp_dir):
+        # v1 tasks still route to strict grading and carry no ratios
+        task_dir = temp_dir / "spreadsheet" / "13-1"
+        task_dir.mkdir(parents=True)
+        build_workbook(task_dir / "1_13-1_golden.xlsx", sheet_name="Sheet1", cells={"C1": 100.0})
+        output = build_workbook(temp_dir / "out.xlsx", sheet_name="Sheet1", cells={"C1": 100.5})
+
+        result = Evaluator(temp_dir).evaluate(
+            Task(
+                id="13-1",
+                instruction="t",
+                spreadsheet_path="spreadsheet/13-1",
+                answer_position="C1",
+                answer_sheet="Sheet1",
+            ),
+            output,
+        )
+        assert result.passed is False  # 100.5 != 100.0 under strict grading
+        assert result.regression_accuracy is None
+        assert result.modification_accuracy is None
+
+    def test_unreadable_input_scores_zero(self, temp_dir):
+        task = make_v2_task(
+            temp_dir,
+            input_cells={"A1": 1},
+            golden_cells={"A1": 2},
+        )
+        # Corrupt the input file (mirrors the DigiMark malformed-XML files)
+        (temp_dir / "spreadsheet" / "01_proj" / "01_01_input.xlsx").write_bytes(b"not a zip")
+        output = build_workbook(temp_dir / "out.xlsx", cells={"A1": 2})
+
+        result = Evaluator(temp_dir).evaluate(task, output)
+        assert result.passed is False
+        assert result.regression_accuracy == 0.0
+        assert result.modification_accuracy == 0.0
+        assert "Evaluation error" in result.message
+
+    def test_missing_golden_scores_zero_for_v2(self, temp_dir):
+        task = make_v2_task(temp_dir, input_cells={"A1": 1}, golden_cells={"A1": 2})
+        (temp_dir / "spreadsheet" / "01_proj" / "01_golden.xlsx").unlink()
+        output = build_workbook(temp_dir / "out.xlsx", cells={"A1": 2})
+
+        result = Evaluator(temp_dir).evaluate(task, output)
+        assert result.passed is False
+        assert result.regression_accuracy == 0.0
+        assert result.modification_accuracy == 0.0
+        assert "Golden file not found" in result.message
+
+    def test_debugging_embedded_uses_formula_mode(self, temp_dir):
+        # Dataset dir named *Debugging* + 'Embedded' in spreadsheet_path.
+        # Range spans A1:A2 so the regression group is non-empty: A2 is empty
+        # everywhere (compare_cell_formula(None, None) -> regression, correct),
+        # while A1 is the modification cell. A single-cell range would leave
+        # the regression group empty, which scores 0.0 and can never pass.
+        dataset_dir = temp_dir / "Debugging"
+        dataset_dir.mkdir()
+        sheets_dir = dataset_dir / "spreadsheet" / "Embedded_case"
+        sheets_dir.mkdir(parents=True)
+        build_workbook(sheets_dir / "x_input.xlsx", cells={"A1": "=SUM(B1:B2)"})
+        build_workbook(sheets_dir / "x_golden.xlsx", cells={"A1": "=SUM(B1:B3)"})
+        output = build_workbook(temp_dir / "out.xlsx", cells={"A1": "=sum($B$1:B3)"})
+
+        task = Task(
+            id="e1",
+            instruction="t",
+            spreadsheet_path="spreadsheet/Embedded_case/x_input.xlsx",
+            answer_position="'Model'!A1:A2",
+            golden_response_path="spreadsheet/Embedded_case/x_golden.xlsx",
+        )
+        result = Evaluator(dataset_dir).evaluate(task, output)
+        # Formula mode: normalized output formula matches golden -> modification correct
+        assert result.passed is True
+        assert result.regression_accuracy == 1.0
+        assert result.modification_accuracy == 1.0
