@@ -102,9 +102,9 @@ group can never pass; ported verbatim for comparability. A regression ratio
   `modification_accuracy: float | None` (both `None` on the v1 path).
 - `TaskResult` carries the two fields through; `to_results_dict` includes them in
   `results.json` when present.
-- The failure `message` stays the first mismatch (`sheet!cell: expected X, got Y`)
-  plus mismatch counts per group, e.g.
-  `"…; 3/1200 regression and 41/85 modification cells wrong"`.
+- The failure `message` stays the first mismatch, in upstream's format
+  (`Modification error at sheet!cell: answer=X, output=Y`) plus mismatch counts
+  per group, e.g. `"…; 3/1200 regression and 41/85 modification cells wrong"`.
 - The runner's per-task log line and end-of-run summary include average
   regression/modification accuracy for v2 tasks. To stay comparable with
   upstream's summary numbers, the averages exclude missing-output tasks but
