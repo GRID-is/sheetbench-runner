@@ -4,7 +4,12 @@ import openpyxl
 import pytest
 from openpyxl.styles import Font
 
-from sheetbench_runner.evaluator_v2 import compare_cell_value
+from sheetbench_runner.evaluator_v2 import (
+    _find_sheet,
+    _has_excel_error,
+    compare_cell_formula,
+    compare_cell_value,
+)
 
 
 class TestCompareCellValue:
@@ -79,3 +84,44 @@ class TestCompareCellValue:
 
     def test_type_mismatch_fails(self):
         assert compare_cell_value("hello", 5.0) is False
+
+
+class TestCompareCellFormula:
+    def test_identical_formulas(self):
+        assert compare_cell_formula("=SUM(A1:B2)", "=SUM(A1:B2)") is True
+
+    def test_case_dollar_and_plus_normalized(self):
+        assert compare_cell_formula("=+sum($A$1:B2)", "=SUM(A1:B2)") is True
+
+    def test_different_formulas(self):
+        assert compare_cell_formula("=SUM(A1:B2)", "=SUM(A1:B3)") is False
+
+    def test_none_and_empty_equivalent(self):
+        assert compare_cell_formula(None, "") is True
+
+    def test_non_formula_values_fall_back_to_value_compare(self):
+        assert compare_cell_formula(100.0, 100.9) is True
+        assert compare_cell_formula(100.0, 102.0) is False
+
+
+class TestHasExcelError:
+    @pytest.mark.parametrize(
+        "value", ["#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#NULL!", "#N/A", "#NUM!"]
+    )
+    def test_error_strings(self, value):
+        assert _has_excel_error(value) is True
+
+    def test_non_errors(self):
+        assert _has_excel_error("hello") is False
+        assert _has_excel_error(5.0) is False
+        assert _has_excel_error(None) is False
+
+
+class TestFindSheet:
+    def test_exact_and_fuzzy_match(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "My Sheet "
+        assert _find_sheet(wb, "My Sheet ") is ws
+        assert _find_sheet(wb, "my sheet") is ws
+        assert _find_sheet(wb, "Other") is None

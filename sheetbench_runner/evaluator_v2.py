@@ -11,6 +11,9 @@ helper imports below stay acyclic.
 
 from typing import Any
 
+import openpyxl
+from openpyxl.worksheet.worksheet import Worksheet
+
 from .evaluator import _generate_cell_names, _transform_value
 
 _DISPLAY_EQUIVALENT_ERRORS = {"#DIV/0!", "#N/A"}
@@ -85,3 +88,46 @@ def _numbers_match(v1: float, v2: float, tolerance: float) -> bool:
     if v1 == 0 or v2 == 0:
         return abs(v1 - v2) <= tolerance
     return abs(v1 - v2) / max(abs(v1), abs(v2)) <= tolerance
+
+
+_EXCEL_ERRORS = {"#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#NULL!", "#N/A", "#NUM!"}
+
+
+def _has_excel_error(value: Any) -> bool:
+    """True if the value is an Excel error string."""
+    return isinstance(value, str) and value in _EXCEL_ERRORS
+
+
+def _find_sheet(wb: openpyxl.Workbook, name: str) -> Worksheet | None:
+    """Find a worksheet with whitespace-tolerant, case-insensitive matching."""
+    if name in wb.sheetnames:
+        return wb[name]
+    name_stripped = name.strip().lower()
+    for sn in wb.sheetnames:
+        if sn.strip().lower() == name_stripped:
+            return wb[sn]
+    return None
+
+
+def compare_cell_formula(f1: Any, f2: Any) -> bool:
+    """Compare formula-level cell values (upstream compare_cell_formula)."""
+    # ArrayFormula objects (CSE array formulas) compare by formula text
+    if hasattr(f1, "text") and hasattr(f2, "text"):
+        return bool(f1.text == f2.text)
+
+    # Both formulas: normalize $ markers, case, and the legacy =+ prefix
+    if isinstance(f1, str) and isinstance(f2, str) and f1.startswith("=") and f2.startswith("="):
+
+        def _normalize(f: str) -> str:
+            f = f.replace("$", "").upper()
+            if f.startswith("=+"):
+                f = "=" + f[2:]
+            return f
+
+        return _normalize(f1) == _normalize(f2)
+
+    empty = (None, "")
+    if f1 in empty and f2 in empty:
+        return True
+
+    return compare_cell_value(f1, f2)
