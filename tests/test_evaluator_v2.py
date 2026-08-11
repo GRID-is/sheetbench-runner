@@ -1,0 +1,81 @@
+"""Tests for v2 (SpreadsheetBench 2) evaluation semantics."""
+
+import openpyxl
+import pytest
+from openpyxl.styles import Font
+
+from sheetbench_runner.evaluator_v2 import compare_cell_value
+
+
+class TestCompareCellValue:
+    """Port of upstream compare_cell_value semantics."""
+
+    # -- numeric tolerance (1% relative, 0.01 absolute at zero) --
+
+    def test_equal_numbers(self):
+        assert compare_cell_value(5, 5) is True
+
+    def test_within_relative_tolerance(self):
+        assert compare_cell_value(100.0, 100.9) is True  # 0.9% off
+
+    def test_outside_relative_tolerance(self):
+        assert compare_cell_value(100.0, 101.1) is False  # 1.1% off
+
+    def test_zero_uses_absolute_tolerance(self):
+        assert compare_cell_value(0, 0.009) is True
+        assert compare_cell_value(0, 0.011) is False
+
+    def test_no_rounding_boundary_artifact(self):
+        # Raw comparison, not round-to-2: these differ by ~1e-17
+        assert compare_cell_value(-0.105, -0.10500000000000001) is True
+
+    # -- "not meaningful" equivalence --
+
+    @pytest.mark.parametrize(
+        "golden,output",
+        [
+            ("#DIV/0!", "N/A"),
+            ("#N/A", "NM"),
+            ("#DIV/0!", "n.m."),
+            ("#N/A", "—"),
+            ("-", "--"),
+            ("Not Meaningful", "#DIV/0!"),
+        ],
+    )
+    def test_not_meaningful_pairs_match(self, golden, output):
+        assert compare_cell_value(golden, output) is True
+
+    def test_not_meaningful_vs_number_fails(self):
+        assert compare_cell_value("#DIV/0!", 5.0) is False
+
+    def test_plain_string_not_in_equivalence_class(self):
+        assert compare_cell_value("N/A", "hello") is False
+
+    # -- empty / None / zero equivalences --
+
+    def test_none_equals_empty_string(self):
+        assert compare_cell_value(None, "") is True
+        assert compare_cell_value("", None) is True
+
+    def test_none_equals_zero(self):
+        assert compare_cell_value(None, 0) is True
+        assert compare_cell_value(0.0, None) is True
+
+    def test_none_vs_nonzero_fails(self):
+        assert compare_cell_value(None, 5) is False
+
+    # -- strings --
+
+    def test_numeric_strings_compared_with_tolerance(self):
+        assert compare_cell_value("100.0", "100.5") is True
+        assert compare_cell_value("100.0", "102.0") is False
+
+    def test_numeric_string_vs_number(self):
+        assert compare_cell_value("3.14159", 3.14) is True
+
+    def test_formula_strings_case_and_dollar_insensitive(self):
+        assert compare_cell_value("=sum($A$1:B2)", "=SUM(A1:B2)") is True
+        assert compare_cell_value("=SUM(A1:B2)", "=SUM(A1:B3)") is False
+
+    def test_type_mismatch_fails(self):
+        assert compare_cell_value("hello", 5.0) is False
