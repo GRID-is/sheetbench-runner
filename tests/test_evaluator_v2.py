@@ -442,6 +442,72 @@ class TestEvaluatorV2Dispatch:
         assert result.regression_accuracy == 1.0
         assert result.modification_accuracy == 1.0
 
+    def test_debugging_color_uses_font_color_mode(self, temp_dir):
+        # Dataset dir named *Debugging* + 'Color' in spreadsheet_path.
+        # Input A1 has the same VALUE as golden but no font set, while golden's
+        # A1 is red: in font-color mode that makes A1 a modification cell (the
+        # font differs), which is what proves the mode is active. A2 is empty
+        # everywhere with matching (unset) fonts, so it's the regression cell
+        # and keeps the regression group non-empty.
+        dataset_dir = temp_dir / "Debugging"
+        dataset_dir.mkdir()
+        sheets_dir = dataset_dir / "spreadsheet" / "Color_case"
+        sheets_dir.mkdir(parents=True)
+        build_workbook(sheets_dir / "x_input.xlsx", cells={"A1": 1})
+        build_workbook(
+            sheets_dir / "x_golden.xlsx",
+            cells={"A1": 1},
+            fonts={"A1": Font(color="FFFF0000")},
+        )
+        task = Task(
+            id="c1",
+            instruction="t",
+            spreadsheet_path="spreadsheet/Color_case/x_input.xlsx",
+            answer_position="'Model'!A1:A2",
+            golden_response_path="spreadsheet/Color_case/x_golden.xlsx",
+        )
+
+        wrong_output = build_workbook(
+            temp_dir / "out_wrong.xlsx", cells={"A1": 1}, fonts={"A1": Font(color="FF00FF00")}
+        )
+        result = Evaluator(dataset_dir).evaluate(task, wrong_output)
+        # Value alone (1 == 1) would pass; font-color mode catches the wrong font
+        assert result.passed is False
+        assert result.modification_accuracy == 0.0
+
+        correct_output = build_workbook(
+            temp_dir / "out_correct.xlsx", cells={"A1": 1}, fonts={"A1": Font(color="FFFF0000")}
+        )
+        result2 = Evaluator(dataset_dir).evaluate(task, correct_output)
+        assert result2.passed is True
+        assert result2.regression_accuracy == 1.0
+        assert result2.modification_accuracy == 1.0
+
+    def test_embedded_path_outside_debugging_dataset_stays_value_mode(self, temp_dir):
+        # Same file layout as test_debugging_embedded_uses_formula_mode, but the
+        # dataset dir is NOT named Debugging -> formula mode must not activate.
+        dataset_dir = temp_dir / "Financial_Model"
+        dataset_dir.mkdir()
+        sheets_dir = dataset_dir / "spreadsheet" / "Embedded_case"
+        sheets_dir.mkdir(parents=True)
+        build_workbook(sheets_dir / "x_input.xlsx", cells={"A1": "=SUM(B1:B2)"})
+        build_workbook(sheets_dir / "x_golden.xlsx", cells={"A1": "=SUM(B1:B3)"})
+        output = build_workbook(temp_dir / "out.xlsx", cells={"A1": "=sum($B$1:B3)"})
+
+        task = Task(
+            id="e2",
+            instruction="t",
+            spreadsheet_path="spreadsheet/Embedded_case/x_input.xlsx",
+            answer_position="'Model'!A1:A2",
+            golden_response_path="spreadsheet/Embedded_case/x_golden.xlsx",
+        )
+        result = Evaluator(dataset_dir).evaluate(task, output)
+        # Value mode (data_only=True): formulas have no cached value, so A1 and
+        # A2 both read as None == None and classify as regression; with no
+        # modification cells the group scores 0.0 and the task can't pass.
+        assert result.passed is False
+        assert result.modification_accuracy == 0.0
+
 
 class TestTaskResultRatios:
     def test_ratios_in_results_dict_when_set(self):

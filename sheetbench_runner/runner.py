@@ -458,8 +458,12 @@ async def run(
             existing["message"] = eval_result.message
             if eval_result.regression_accuracy is not None:
                 existing["regression_accuracy"] = eval_result.regression_accuracy
+            else:
+                existing.pop("regression_accuracy", None)
             if eval_result.modification_accuracy is not None:
                 existing["modification_accuracy"] = eval_result.modification_accuracy
+            else:
+                existing.pop("modification_accuracy", None)
             reevaluated += 1
 
         if reevaluated > 0:
