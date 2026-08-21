@@ -149,16 +149,20 @@ async def cli(
     logger.info(f"Selected {len(tasks)} tasks")
 
     # Run
-    stats = await run(
-        dataset_path=dataset,
-        run_dir_path=run_dir,
-        infuser_url=cfg.infuser_url,
-        model=cfg.model,
-        tasks=tasks,
-        concurrency=cfg.concurrency,
-        timeout_seconds=cfg.timeout_seconds,
-        reevaluate=reevaluate,
-    )
+    try:
+        stats = await run(
+            dataset_path=dataset,
+            run_dir_path=run_dir,
+            infuser_url=cfg.infuser_url,
+            model=cfg.model,
+            tasks=tasks,
+            concurrency=cfg.concurrency,
+            timeout_seconds=cfg.timeout_seconds,
+            reevaluate=reevaluate,
+        )
+    except ValueError as e:
+        logger.error(str(e))
+        sys.exit(1)
 
     # Print summary
     print("\n" + "=" * 50)

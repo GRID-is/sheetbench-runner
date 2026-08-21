@@ -364,6 +364,23 @@ class TaskRunner:
                 return result
 
 
+def check_dataset_binding(recorded: str | None, requested: Path) -> None:
+    """
+    Refuse to grade a run directory against a different dataset than the one
+    it was created with. Task ids overlap across v2 categories, so a wrong
+    dataset silently grades outputs against the wrong goldens. Legacy run
+    dirs (no recorded dataset) are accepted.
+    """
+    if recorded is None:
+        return
+    if Path(recorded).resolve() != requested.resolve():
+        raise ValueError(
+            f"Run directory was created for dataset {recorded!r} but "
+            f"{str(requested)!r} was passed; refusing to grade against a "
+            "different dataset."
+        )
+
+
 async def run(
     dataset_path: Path,
     run_dir_path: Path,
@@ -419,8 +436,13 @@ async def run(
             git_hash=git_hash,
             infuser_config=status,
             notes=run_dir_path.name,
+            dataset_path=str(dataset_path.resolve()),
         )
         run_dir.create(metadata)
+
+    existing_metadata = run_dir.load_metadata()
+    if existing_metadata is not None:
+        check_dataset_binding(existing_metadata.dataset_path, dataset_path)
 
     # Always load existing results (for resume)
     run_dir.load()

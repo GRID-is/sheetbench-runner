@@ -95,6 +95,22 @@ sheetbench-runner \
   --reevaluate
 ```
 
+### Running every category
+
+Each run directory is bound to exactly one dataset (task ids overlap across
+v2 categories, so mixing them would collide). To run all three gradable
+categories in one command, each into its own `<prefix>-<category>` run dir,
+with a combined summary at the end:
+
+```bash
+make bench-all PREFIX=data/runs/<date> [ARGS="--concurrency 2"]
+make parity-all PREFIX=data/runs/<date>   # LO-parity pass over all three
+```
+
+New run dirs record their dataset in `run.json`; regrading a run dir
+against a different dataset is refused, and `lo_parity.sh` uses the
+recorded dataset automatically.
+
 ### Upstream-parity grading (LibreOffice pass)
 
 The official SpreadsheetBench 2 protocol recalculates every output with

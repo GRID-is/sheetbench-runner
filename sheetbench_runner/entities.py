@@ -180,6 +180,10 @@ class RunMetadata:
     infuser_config: dict[str, Any]
     test_set: int | None = None
     notes: str = ""
+    # Dataset directory this run was created against. Task ids overlap across
+    # v2 categories, so regrading against the wrong dataset silently grades
+    # against the wrong goldens; recording the binding lets tooling validate.
+    dataset_path: str | None = None
     created_at: datetime = field(default_factory=datetime.now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -190,6 +194,7 @@ class RunMetadata:
             "infuser_config": self.infuser_config,
             "test_set": self.test_set,
             "notes": self.notes,
+            "dataset_path": self.dataset_path,
             "created_at": self.created_at.isoformat(),
         }
 
@@ -207,5 +212,6 @@ class RunMetadata:
             infuser_config=data.get("infuser_config", {}),
             test_set=data.get("test_set"),
             notes=data.get("notes", ""),
+            dataset_path=data.get("dataset_path"),
             created_at=created_at,
         )

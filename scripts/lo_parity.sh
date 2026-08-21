@@ -12,8 +12,16 @@
 set -euo pipefail
 
 RUN_DIR=${1:?usage: lo_parity.sh <run-dir> [dataset-dir]}
-DATASET=${2:-../SpreadsheetBench/data/spreadsheetbench-v2/Financial_Model}
 RUN_DIR=${RUN_DIR%/}
+# Dataset preference: explicit arg > run.json's recorded dataset_path (new
+# runs are self-describing) > Financial_Model fallback for legacy run dirs.
+RECORDED_DATASET=$(python3 -c "
+import json, sys
+try:
+    print(json.load(open('$RUN_DIR/run.json')).get('dataset_path') or '')
+except Exception:
+    print('')" 2>/dev/null || true)
+DATASET=${2:-${RECORDED_DATASET:-../SpreadsheetBench/data/spreadsheetbench-v2/Financial_Model}}
 PARITY_DIR="${RUN_DIR}-parity"
 IMAGE=lo-recalc
 
