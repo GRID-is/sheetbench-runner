@@ -1,4 +1,4 @@
-.PHONY: test lint lt install
+.PHONY: test lint lt install lo-image lo-parity
 
 test:
 	uv run pytest tests/ -v --cov=sheetbench_runner --cov-report=term-missing
@@ -18,3 +18,11 @@ install:
 
 test_%:
 	uv run pytest --tb=short -vs -k $@ tests/
+
+lo-image:
+	docker build -t lo-recalc docker/lo-recalc/
+
+# Usage: make lo-parity RUN=data/runs/<run-dir> [DATASET=<dataset-dir>]
+lo-parity: lo-image
+	@test -n "$(RUN)" || { echo "usage: make lo-parity RUN=data/runs/<run-dir> [DATASET=<dataset-dir>]"; exit 1; }
+	scripts/lo_parity.sh "$(RUN)" $(if $(DATASET),"$(DATASET)")

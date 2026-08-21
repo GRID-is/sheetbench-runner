@@ -106,9 +106,11 @@ uncalculated cells in outputs are recomputed rather than penalized). To
 produce an upstream-comparable number:
 
 ```bash
-docker build -t lo-recalc docker/lo-recalc/
-scripts/lo_parity.sh data/runs/<run-dir> [dataset-dir]
+make lo-parity RUN=data/runs/<run-dir> [DATASET=<dataset-dir>]
 ```
+
+(equivalent to `docker build -t lo-recalc docker/lo-recalc/` followed by
+`scripts/lo_parity.sh <run-dir> [dataset-dir]`)
 
 Run it from the repo root; the regrade uses `uv run` so it always grades
 with the current evaluator source (not the installed CLI snapshot). The
