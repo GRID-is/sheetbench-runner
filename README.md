@@ -95,6 +95,32 @@ sheetbench-runner \
   --reevaluate
 ```
 
+### Upstream-parity grading (LibreOffice pass)
+
+The official SpreadsheetBench 2 protocol recalculates every output with
+LibreOffice before evaluation. GRID outputs are already calculated, so
+native grading skips this — the honest measure of the engine, but it
+systematically differs from published numbers (LibreOffice-normalized
+goldens contain artifacts such as literal `=#N/A` formulas, and stale or
+uncalculated cells in outputs are recomputed rather than penalized). To
+produce an upstream-comparable number:
+
+```bash
+docker build -t lo-recalc docker/lo-recalc/
+scripts/lo_parity.sh data/runs/<run-dir> [dataset-dir]
+```
+
+Run it from the repo root; the regrade uses `uv run` so it always grades
+with the current evaluator source (not the installed CLI snapshot). The
+script clones the run dir to `<run-dir>-parity`, applies upstream's own
+`open_spreadsheet.py` in a Linux container (macOS cannot run it natively —
+and the container runs as root because LibreOffice cannot create its user
+profile under an unmapped UID), regrades the copies, and prints the
+native-vs-parity comparison. Report both numbers; `lo-version.txt` in the
+parity dir records the LibreOffice version used. Reference point: on the
+2026-08-10 Financial_Model run the pass moved 26/100 -> 40/100 with zero
+downward flips.
+
 ### All options
 
 ```
