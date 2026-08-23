@@ -1,6 +1,7 @@
 """HTTP client for the infuser /solve API with workbook upload/download."""
 
 import base64
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,18 @@ from .infuser_base import (
     _to_optional_int,
     handle_http_errors,
 )
+
+
+def _provider_headers(model: str | None) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    namespace = model.partition("/")[0] if model and "/" in model else None
+    if namespace in ("openai", "openai-compatible"):
+        if openai_api_key := os.environ.get("OPENAI_API_KEY"):
+            headers["X-OpenAI-API-Key"] = openai_api_key
+    elif namespace == "anthropic":
+        if anthropic_api_key := os.environ.get("ANTHROPIC_API_KEY"):
+            headers["X-Anthropic-API-Key"] = anthropic_api_key
+    return headers
 
 
 @dataclass(frozen=True)
@@ -103,6 +116,7 @@ class InfuserClient(InfuserBaseClient):
             response = await self.client.post(
                 f"{self.base_url}/solve",
                 json=payload,
+                headers=_provider_headers(model),
             )
             response.raise_for_status()
             data = response.json()

@@ -210,6 +210,50 @@ async def test_api_key_sent_as_bearer_token(
 
 
 @respx.mock
+async def test_provider_api_keys_are_forwarded_in_dedicated_headers(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_solve_response: dict,
+):
+    """Provider keys reach the infuser without entering the request body."""
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+    route = respx.post("http://localhost:3000/solve").mock(
+        return_value=httpx.Response(200, json=mock_solve_response)
+    )
+
+    async with InfuserClient("http://localhost:3000") as client:
+        await client.solve("wb-123", "Test prompt", model="openai/gpt-5.6-terra")
+
+    request = route.calls[0].request
+    assert request.headers["X-OpenAI-API-Key"] == "openai-test-key"
+    assert "X-Anthropic-API-Key" not in request.headers
+    assert "openai-test-key" not in request.content.decode()
+    assert "anthropic-test-key" not in request.content.decode()
+
+
+@pytest.mark.parametrize("model", [None, "gpt-5.6-terra", "unknown/model"])
+@respx.mock
+async def test_provider_api_keys_are_not_forwarded_for_ambiguous_models(
+    model: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_solve_response: dict,
+):
+    """Provider credentials stay local unless the model namespace selects one."""
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+    route = respx.post("http://localhost:3000/solve").mock(
+        return_value=httpx.Response(200, json=mock_solve_response)
+    )
+
+    async with InfuserClient("http://localhost:3000") as client:
+        await client.solve("wb-123", "Test prompt", model=model)
+
+    request = route.calls[0].request
+    assert "X-OpenAI-API-Key" not in request.headers
+    assert "X-Anthropic-API-Key" not in request.headers
+
+
+@respx.mock
 async def test_no_auth_header_without_api_key(
     monkeypatch: pytest.MonkeyPatch,
     mock_solve_response: dict,

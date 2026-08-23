@@ -98,6 +98,12 @@ timeout_seconds = 3600
 
 CLI options (`--infuser-url`, `--concurrency`, `--timeout`) override their config file equivalents.
 
+The model may include a provider namespace, for example
+`--model openai/gpt-5.6-terra`. When `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is
+set, the runner forwards it only on `/solve` as `X-OpenAI-API-Key` or
+`X-Anthropic-API-Key`. Provider keys are not written to the request body or run
+metadata.
+
 ## Output
 
 A run directory contains:
