@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -18,9 +19,10 @@ from .dataset import Dataset
 from .entities import RunMetadata, Task, TaskResult, TaskStatus
 from .evaluator import Evaluator
 from .infuser import InfuserClient
-from .infuser_base import InfuserTransientError
+from .infuser_base import InfuserPermanentError, InfuserTransientError
 from .prompt import build_prompt
 from .run_directory import RunDirectory
+from .solve_profile import SolveProfileError, load_solve_profile
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -63,7 +65,7 @@ class TaskRunner:
         dataset: Dataset,
         run_dir: RunDirectory,
         concurrency: int = 4,
-        model: str | None = None,
+        sensitive_values: tuple[str, ...] = (),
     ):
         """
         Initialize the task runner.
@@ -74,18 +76,38 @@ class TaskRunner:
             dataset: The SpreadsheetBench dataset
             run_dir: Run directory for results
             concurrency: Maximum number of parallel tasks
-            model: Optional model override for all tasks
+            sensitive_values: In-memory-only values forbidden from solve artifacts
+
         """
         self._infuser = infuser
         self._evaluator = evaluator
         self._dataset = dataset
         self._run_dir = run_dir
         self._semaphore = asyncio.Semaphore(concurrency)
-        self._model = model
+        self._sensitive_values = [value for value in sensitive_values if value]
+
         self._stats = RunStats()
         self._progress: Progress | None = None
         self._progress_task: TaskID | None = None
         self._live: Live | None = None
+
+    def clear_sensitive_values(self) -> None:
+        """Release references to credentials and the ephemeral context token."""
+        self._sensitive_values.clear()
+
+    def _contains_sensitive_value(self, value: object) -> bool:
+        if isinstance(value, str):
+            return any(secret in value for secret in self._sensitive_values)
+        if isinstance(value, bytes):
+            return any(secret.encode() in value for secret in self._sensitive_values)
+        if isinstance(value, dict):
+            return any(
+                self._contains_sensitive_value(key) or self._contains_sensitive_value(child)
+                for key, child in value.items()
+            )
+        if isinstance(value, (list, tuple)):
+            return any(self._contains_sensitive_value(child) for child in value)
+        return False
 
     def _build_display(self) -> Group:
         """Build the rich display with progress bar and running tasks."""
@@ -267,9 +289,14 @@ class TaskRunner:
                 prompt = build_prompt(task, workbook_id)
 
                 # Call /solve
-                response = await self._infuser.solve(workbook_id, prompt, model=self._model)
+                response = await self._infuser.solve(workbook_id, prompt)
 
                 logger.info(f"Task {task.id} solve completed")
+
+                if self._contains_sensitive_value(
+                    response.transcript
+                ) or self._contains_sensitive_value(response.output_xlsx):
+                    raise InfuserPermanentError("Solve response contains sensitive material")
 
                 # Write artifacts directly from response
                 output_file: str | None = None
@@ -336,7 +363,7 @@ async def run(
     dataset_path: Path,
     run_dir_path: Path,
     infuser_url: str,
-    model: str | None,
+    solve_profile_path: Path | None,
     tasks: list[Task],
     concurrency: int = 4,
     timeout_seconds: int = 3600,
@@ -349,7 +376,8 @@ async def run(
         dataset_path: Path to the SpreadsheetBench dataset
         run_dir_path: Path to the run directory
         infuser_url: URL of the infuser API
-        model: Model override (e.g., 'openai/gpt-4o'), or None to use default
+        solve_profile_path: Path to a non-secret solve profile JSON file
+
         tasks: Tasks to run
         concurrency: Number of parallel tasks
         timeout_seconds: Timeout per task
@@ -362,33 +390,6 @@ async def run(
     dataset = Dataset(dataset_path)
     evaluator = Evaluator(dataset_path)
     run_dir = RunDirectory(run_dir_path)
-
-    # Create run.json if missing
-    if not run_dir.run_json_path.exists():
-        logger.info(f"Creating run metadata at {run_dir_path}")
-        # Get status from infuser - this is the authoritative config source
-        status: dict[str, object] = {}
-        async with InfuserClient(infuser_url, timeout_seconds) as infuser:
-            try:
-                status = await infuser.get_status()
-            except Exception as e:
-                logger.warning(f"Could not get infuser status: {e}")
-
-        # Determine effective model and git hash from status or fallback
-        model_val = status.get("default_model", "unknown")
-        effective_model = (
-            model if model is not None else (str(model_val) if model_val else "unknown")
-        )
-        git_hash_val = status.get("version", "unknown")
-        git_hash = str(git_hash_val) if git_hash_val else "unknown"
-
-        metadata = RunMetadata(
-            model=effective_model,
-            git_hash=git_hash,
-            infuser_config=status,
-            notes=run_dir_path.name,
-        )
-        run_dir.create(metadata)
 
     # Always load existing results (for resume)
     run_dir.load()
@@ -429,17 +430,80 @@ async def run(
         if reevaluated > 0:
             run_dir._save_results()
             logger.info(f"Re-evaluated {reevaluated} tasks, {changed} changed")
-
-    # Run tasks
-    async with InfuserClient(infuser_url, timeout_seconds) as infuser:
-        runner = TaskRunner(
-            infuser=infuser,
-            evaluator=evaluator,
-            dataset=dataset,
-            run_dir=run_dir,
-            concurrency=concurrency,
-            model=model,
+        passed = sum(
+            1 for task in tasks if (run_dir.get_result(task.id) or {}).get("result") == "pass"
         )
-        stats = await runner.run_all(tasks)
+        failed = sum(
+            1 for task in tasks if (run_dir.get_result(task.id) or {}).get("result") == "fail"
+        )
+        return RunStats(
+            total_tasks=len(tasks),
+            completed=passed + failed,
+            passed=passed,
+            failed=failed,
+            skipped=len(tasks),
+        )
 
-    return stats
+    if solve_profile_path is None:
+        raise SolveProfileError("A solve profile is required; pass --solve-profile PATH")
+    solve_profile = load_solve_profile(solve_profile_path)
+
+    async with InfuserClient(infuser_url, timeout_seconds) as infuser:
+        context_created = False
+        runner: TaskRunner | None = None
+        try:
+            context = await infuser.create_solve_context(
+                solve_profile.configuration, solve_profile.credentials
+            )
+            context_created = True
+
+            existing_metadata = run_dir.load_metadata()
+            if existing_metadata is not None and (
+                existing_metadata.infuser_config != context.configuration
+                or existing_metadata.model != solve_profile.default_model
+            ):
+                raise SolveProfileError(
+                    "Resume configuration does not match the existing run metadata; "
+                    "use the original solve profile or a new run directory"
+                )
+
+            if not run_dir.run_json_path.exists():
+                logger.info(f"Creating run metadata at {run_dir_path}")
+                status: dict[str, object] = {}
+                try:
+                    status = await infuser.get_status()
+                except Exception as e:
+                    logger.warning(f"Could not get infuser status: {e}")
+                git_hash_val = status.get("version", "unknown")
+                git_hash = str(git_hash_val) if git_hash_val else "unknown"
+                metadata = RunMetadata(
+                    model=solve_profile.default_model,
+                    git_hash=git_hash,
+                    infuser_config=context.configuration,
+                    notes=run_dir_path.name,
+                )
+                run_dir.create(metadata)
+
+            runner = TaskRunner(
+                infuser=infuser,
+                evaluator=evaluator,
+                dataset=dataset,
+                run_dir=run_dir,
+                concurrency=concurrency,
+                sensitive_values=(*solve_profile.credentials.values(), context.id),
+            )
+            return await runner.run_all(tasks)
+        finally:
+            try:
+                if context_created:
+                    primary_error = sys.exception()
+                    try:
+                        await infuser.delete_solve_context()
+                    except Exception as e:
+                        if primary_error is None:
+                            raise
+                        logger.warning(f"Could not delete solve context: {e}")
+            finally:
+                if runner is not None:
+                    runner.clear_sensitive_values()
+                solve_profile.credentials.clear()

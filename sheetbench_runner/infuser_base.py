@@ -1,6 +1,5 @@
 """Shared infrastructure for infuser HTTP clients."""
 
-import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Self
 
@@ -49,17 +48,19 @@ def _to_optional_int(value: object) -> int | None:
 
 
 @asynccontextmanager
-async def handle_http_errors(operation: str) -> AsyncIterator[None]:
+async def handle_http_errors(
+    operation: str, *, include_response_body: bool = True
+) -> AsyncIterator[None]:
     """Handle HTTP errors consistently across all operations."""
     try:
         yield
     except httpx.HTTPStatusError as e:
-        text = e.response.text[:_ERROR_TEXT_MAX_LENGTH]
+        detail = f": {e.response.text[:_ERROR_TEXT_MAX_LENGTH]}" if include_response_body else ""
         if e.response.status_code >= 500:
             raise InfuserTransientError(
-                f"{operation} error {e.response.status_code}: {text}"
+                f"{operation} error {e.response.status_code}{detail}"
             ) from e
-        raise InfuserPermanentError(f"{operation} error {e.response.status_code}: {text}") from e
+        raise InfuserPermanentError(f"{operation} error {e.response.status_code}{detail}") from e
     except (httpx.ConnectError, httpx.TimeoutException) as e:
         raise InfuserTransientError(f"Connection error: {e}") from e
 
@@ -88,12 +89,7 @@ class InfuserBaseClient:
 
     async def __aenter__(self) -> Self:
         if self._client is None:
-            headers: dict[str, str] = {}
-            api_key = os.environ.get("GRID_API_KEY")
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
             self._client = httpx.AsyncClient(
-                headers=headers,
                 timeout=httpx.Timeout(self.timeout_seconds, connect=30.0),
             )
         return self

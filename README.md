@@ -35,6 +35,7 @@ Point the runner at a SpreadsheetBench dataset directory and an output directory
 sheetbench-runner \
   --dataset data/spreadsheetbench_verified_400/ \
   --run-dir data/runs/2026-02-05-my-run \
+  --solve-profile solve-profile.json \
   --concurrency 10
 ```
 
@@ -45,6 +46,7 @@ sheetbench-runner \
   --dataset data/spreadsheetbench_verified_400/ \
   --run-dir data/runs/2026-02-05-my-run \
   --task-file task-sets/all_verified_tasks.txt \
+  --solve-profile solve-profile.json \
   --concurrency 10
 ```
 
@@ -75,6 +77,7 @@ Options:
   --task-file PATH       File with task IDs to run (one per line)
   --config PATH          Path to config.toml file
   --infuser-url TEXT     Override infuser URL from config
+  --solve-profile PATH   Non-secret solve profile JSON file
   --concurrency INTEGER  Number of parallel tasks (default: 4)
   --timeout INTEGER      Timeout per task in seconds (default: 3600)
   -v, --verbose          Enable verbose logging
@@ -91,18 +94,31 @@ Copy `config.example.toml` to `config.toml` and adjust as needed:
 [infuser]
 url = "http://localhost:3000"
 
+[solve]
+profile = "solve-profile.json"
+
 [runner]
 concurrency = 4
 timeout_seconds = 3600
 ```
 
-CLI options (`--infuser-url`, `--concurrency`, `--timeout`) override their config file equivalents.
+CLI options (`--infuser-url`, `--solve-profile`, `--concurrency`, `--timeout`)
+override their config file equivalents.
 
-The model may include a provider namespace, for example
-`--model openai/gpt-5.6-terra`. When `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is
-set, the runner forwards it only on `/solve` as `X-OpenAI-API-Key` or
-`X-Anthropic-API-Key`. Provider keys are not written to the request body or run
-metadata.
+The solve profile is JSON containing `models`, `modelRoles`, and optional
+`ttlSeconds`. It is non-secret and must not contain credentials or secret values.
+Each model's `credential` directly names the environment variable containing its
+API key and must match the portable syntax `[A-Za-z_][A-Za-z0-9_]*`. Models may
+share an environment variable or name different variables. See
+`solve-profile.example.json` for the shape.
+
+For every non-reevaluation invocation, the runner creates one short-lived solve
+context before running tasks, uses it for all workbook uploads and solves, and
+deletes it on exit. Credential values and the context ID remain in process memory
+and are never written to run artifacts. A pure `--reevaluate` run makes no server
+requests and does not require a solve profile.
+The non-secret environment variable name can naturally appear in stored,
+sanitized profile/configuration metadata; its resolved value never does.
 
 ## Output
 

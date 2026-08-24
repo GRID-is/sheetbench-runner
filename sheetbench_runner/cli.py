@@ -72,10 +72,10 @@ def load_task_ids_from_file(file_path: Path) -> set[str]:
     help="Override infuser URL from config",
 )
 @click.option(
-    "--model",
-    type=str,
+    "--solve-profile",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
     default=None,
-    help="Model override (e.g., 'openai/gpt-4o', 'minimax/M2.1')",
+    help="Non-secret solve profile JSON file",
 )
 @click.option(
     "--concurrency",
@@ -107,7 +107,7 @@ async def cli(
     task_file: Path | None,
     config: Path | None,
     infuser_url: str | None,
-    model: str | None,
+    solve_profile: Path | None,
     concurrency: int | None,
     timeout: int | None,
     verbose: bool,
@@ -124,7 +124,7 @@ async def cli(
     cfg = Config.load(config)
     cfg = cfg.with_overrides(
         infuser_url=infuser_url,
-        model=model,
+        solve_profile=solve_profile.resolve() if solve_profile else None,
         concurrency=concurrency,
         timeout_seconds=timeout,
     )
@@ -153,7 +153,7 @@ async def cli(
         dataset_path=dataset,
         run_dir_path=run_dir,
         infuser_url=cfg.infuser_url,
-        model=cfg.model,
+        solve_profile_path=cfg.solve_profile,
         tasks=tasks,
         concurrency=cfg.concurrency,
         timeout_seconds=cfg.timeout_seconds,

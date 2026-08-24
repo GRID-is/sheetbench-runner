@@ -4,6 +4,9 @@
 [infuser]
 url = "http://localhost:3000"
 
+[solve]
+profile = "solve-profile.json" # Non-secret JSON; relative to this config file
+
 [runner]
 concurrency = 4           # Number of parallel tasks
 timeout_seconds = 3600    # 1 hour timeout per task

@@ -1,0 +1,13 @@
+{
+  "models": {
+    "primary": {
+      "transport": "openai-compatible",
+      "model": "your-model",
+      "credential": "OPENAI_API_KEY"
+    }
+  },
+  "modelRoles": {
+    "default": "primary"
+  },
+  "ttlSeconds": 3600
+}
