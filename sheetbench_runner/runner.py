@@ -92,7 +92,7 @@ class TaskRunner:
         self._live: Live | None = None
 
     def clear_sensitive_values(self) -> None:
-        """Release references to credentials and the ephemeral context token."""
+        """Release references to API keys and the ephemeral context token."""
         self._sensitive_values.clear()
 
     def _contains_sensitive_value(self, value: object) -> bool:
@@ -453,7 +453,7 @@ async def run(
         runner: TaskRunner | None = None
         try:
             context = await infuser.create_solve_context(
-                solve_profile.configuration, solve_profile.credentials
+                solve_profile.configuration, solve_profile.api_keys
             )
             context_created = True
 
@@ -490,7 +490,7 @@ async def run(
                 dataset=dataset,
                 run_dir=run_dir,
                 concurrency=concurrency,
-                sensitive_values=(*solve_profile.credentials.values(), context.id),
+                sensitive_values=(*solve_profile.api_keys.values(), context.id),
             )
             return await runner.run_all(tasks)
         finally:
@@ -506,4 +506,4 @@ async def run(
             finally:
                 if runner is not None:
                     runner.clear_sensitive_values()
-                solve_profile.credentials.clear()
+                solve_profile.api_keys.clear()

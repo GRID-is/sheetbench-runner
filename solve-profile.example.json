@@ -3,7 +3,7 @@
     "primary": {
       "transport": "openai-compatible",
       "model": "your-model",
-      "credential": "OPENAI_API_KEY"
+      "apiKeyEnv": "OPENAI_API_KEY"
     }
   },
   "modelRoles": {

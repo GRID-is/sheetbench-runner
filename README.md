@@ -106,19 +106,21 @@ CLI options (`--infuser-url`, `--solve-profile`, `--concurrency`, `--timeout`)
 override their config file equivalents.
 
 The solve profile is JSON containing `models`, `modelRoles`, and optional
-`ttlSeconds`. It is non-secret and must not contain credentials or secret values.
-Each model's `credential` directly names the environment variable containing its
-API key and must match the portable syntax `[A-Za-z_][A-Za-z0-9_]*`. Models may
-share an environment variable or name different variables. See
-`solve-profile.example.json` for the shape.
+`ttlSeconds`. It is non-secret and must not contain API keys or legacy credential
+fields. Each model's required `apiKeyEnv` directly names the environment variable
+containing its API key and must match the portable syntax
+`[A-Za-z_][A-Za-z0-9_]*` (maximum 64 characters). Models may share an environment
+variable or name different variables. The runner resolves each key before HTTP and
+submits it inline as that model's `apiKey`; no top-level credentials object is sent.
+See `solve-profile.example.json` for the shape.
 
 For every non-reevaluation invocation, the runner creates one short-lived solve
 context before running tasks, uses it for all workbook uploads and solves, and
-deletes it on exit. Credential values and the context ID remain in process memory
-and are never written to run artifacts. A pure `--reevaluate` run makes no server
-requests and does not require a solve profile.
-The non-secret environment variable name can naturally appear in stored,
-sanitized profile/configuration metadata; its resolved value never does.
+deletes it on exit. API key values and the context ID remain in process memory
+and are never written to run artifacts. Run metadata stores only the server's
+sanitized configuration (`transport`, `model`, and optional `options` per model),
+so neither `apiKey` nor `apiKeyEnv` is persisted. A pure `--reevaluate` run makes
+no server requests and does not require a solve profile.
 
 ## Output
 

@@ -22,12 +22,20 @@ PROFILE: dict[str, Any] = {
         "primary": {
             "transport": "openai-compatible",
             "model": "opaque-model",
-            "credential": "OPAQUE_ENV",
+            "apiKeyEnv": "OPAQUE_ENV",
         }
     },
     "modelRoles": {"default": "primary"},
 }
-SANITIZED_CONFIGURATION = {**PROFILE, "ttlSeconds": 7200}
+SANITIZED_MODEL: dict[str, object] = {
+    "transport": "openai-compatible",
+    "model": "opaque-model",
+}
+SANITIZED_CONFIGURATION = {
+    "models": {"primary": SANITIZED_MODEL},
+    "modelRoles": {"default": "primary"},
+    "ttlSeconds": 7200,
+}
 CONTEXT_TOKEN = "Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M"
 
 
@@ -152,8 +160,8 @@ async def test_run_propagates_cleanup_failure_after_successful_work(
             **SANITIZED_CONFIGURATION,
             "models": {
                 "primary": {
-                    **PROFILE["models"]["primary"],
-                    "options": {"apiKey": {"type": "api-key", "value": "artifact-secret"}},
+                    **SANITIZED_MODEL,
+                    "apiKey": "artifact-secret",
                 }
             },
         },
@@ -161,13 +169,13 @@ async def test_run_propagates_cleanup_failure_after_successful_work(
             **SANITIZED_CONFIGURATION,
             "models": {
                 "primary": {
-                    **PROFILE["models"]["primary"],
+                    **SANITIZED_MODEL,
                     "model": "prefix-artifact-secret-suffix",
                 }
             },
         },
     ],
-    ids=["credentials", "credential-value-object", "embedded-resolved-secret"],
+    ids=["credentials", "apiKey", "embedded-resolved-secret"],
 )
 @respx.mock
 async def test_untrusted_context_configuration_is_never_written_to_run_artifacts(
@@ -372,27 +380,27 @@ async def test_pure_reevaluation_does_no_server_work(
 
 
 @pytest.mark.parametrize(
-    ("credential", "environment_value"),
+    ("apiKeyEnv", "environment_value"),
     [("MISSING_ENV", None), ("EMPTY_ENV", ""), ("BAD-NAME", "must-not-appear")],
 )
 @respx.mock
-async def test_invalid_credential_environment_fails_before_http_or_tasks(
+async def test_invalid_apiKeyEnv_environment_fails_before_http_or_tasks(
     tmp_path: Path,
     sample_dataset_dir: Path,
     sample_task: Task,
     monkeypatch: pytest.MonkeyPatch,
-    credential: str,
+    apiKeyEnv: str,
     environment_value: str | None,
 ) -> None:
     if environment_value is None:
-        monkeypatch.delenv(credential, raising=False)
+        monkeypatch.delenv(apiKeyEnv, raising=False)
     else:
-        monkeypatch.setenv(credential, environment_value)
+        monkeypatch.setenv(apiKeyEnv, environment_value)
     run_all = AsyncMock(return_value=RunStats(total_tasks=1))
     monkeypatch.setattr(TaskRunner, "run_all", run_all)
     profile = {
         **PROFILE,
-        "models": {"primary": {**PROFILE["models"]["primary"], "credential": credential}},
+        "models": {"primary": {**PROFILE["models"]["primary"], "apiKeyEnv": apiKeyEnv}},
     }
     profile_path = tmp_path / "invalid-profile.json"
     profile_path.write_text(json.dumps(profile))

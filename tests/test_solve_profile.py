@@ -17,12 +17,12 @@ PROFILE: dict[str, Any] = {
         "primary": {
             "transport": "anthropic",
             "model": "model-v9",
-            "credential": "FIRST_KEY",
+            "apiKeyEnv": "FIRST_KEY",
         },
         "reviewer": {
             "transport": "openai-responses",
             "model": "review-model",
-            "credential": "SECOND_KEY",
+            "apiKeyEnv": "SECOND_KEY",
         },
     },
     "modelRoles": {"default": "primary", "review": "reviewer"},
@@ -35,15 +35,12 @@ def write_profile(path: Path, profile: object = PROFILE) -> Path:
     return path
 
 
-def profile_with_counts(
-    *, models: int = 1, roles: int = 1, credentials: int | None = None
-) -> dict[str, Any]:
-    credential_count = credentials if credentials is not None else models
+def profile_with_counts(*, models: int = 1, roles: int = 1) -> dict[str, Any]:
     configured_models = {
         f"model-{index}": {
             "transport": "anthropic",
             "model": "m",
-            "credential": f"KEY_{index % credential_count}",
+            "apiKeyEnv": f"KEY_{index}",
         }
         for index in range(models)
     }
@@ -61,20 +58,20 @@ def test_resolves_two_arbitrary_environment_names(
     loaded = load_solve_profile(write_profile(tmp_path / "profile.json"))
 
     assert loaded.configuration == PROFILE
-    assert loaded.credentials == {
-        "FIRST_KEY": "first-secret",
-        "SECOND_KEY": "second-secret",
+    assert loaded.api_keys == {
+        "primary": "first-secret",
+        "reviewer": "second-secret",
     }
     assert loaded.default_model == "model-v9"
 
 
-def test_shared_environment_name_produces_one_credential(
+def test_shared_environment_name_repeats_key_for_each_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     profile = {
         **PROFILE,
         "models": {
-            name: {**model, "credential": "SHARED_API_KEY"}
+            name: {**model, "apiKeyEnv": "SHARED_API_KEY"}
             for name, model in PROFILE["models"].items()
         },
     }
@@ -82,7 +79,8 @@ def test_shared_environment_name_produces_one_credential(
 
     loaded = load_solve_profile(write_profile(tmp_path / "profile.json", profile))
 
-    assert loaded.credentials == {"SHARED_API_KEY": "shared-secret"}
+    assert loaded.api_keys == {"primary": "shared-secret", "reviewer": "shared-secret"}
+    assert "shared-secret" not in repr(loaded)
 
 
 def test_absent_environment_variable_never_exposes_another_value(
@@ -112,17 +110,52 @@ def test_blank_environment_value_is_rejected_without_exposing_other_values(
     assert "second-secret" not in str(exc_info.value)
 
 
+def test_api_key_utf8_byte_limit_is_enforced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FIRST_KEY", "é" * 2049)
+    monkeypatch.setenv("SECOND_KEY", "safe")
+
+    with pytest.raises(SolveProfileError, match="4096 UTF-8 bytes") as exc_info:
+        load_solve_profile(write_profile(tmp_path / "profile.json"))
+
+    assert "é" not in str(exc_info.value)
+
+
+def test_repeated_per_model_keys_count_toward_aggregate_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = profile_with_counts(models=17)
+    for model in profile["models"].values():
+        model["apiKeyEnv"] = "SHARED_API_KEY"
+    monkeypatch.setenv("SHARED_API_KEY", "k" * 4096)
+
+    with pytest.raises(SolveProfileError, match="65536 aggregate UTF-8 bytes"):
+        load_solve_profile(write_profile(tmp_path / "profile.json", profile))
+
+
+def test_api_key_byte_caps_are_inclusive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    profile = profile_with_counts(models=16)
+    for model in profile["models"].values():
+        model["apiKeyEnv"] = "SHARED_API_KEY"
+    monkeypatch.setenv("SHARED_API_KEY", "k" * 4096)
+
+    loaded = load_solve_profile(write_profile(tmp_path / "profile.json", profile))
+
+    assert len(loaded.api_keys) == 16
+
+
 @pytest.mark.parametrize(
-    "credential",
+    "apiKeyEnv",
     ["", "   ", "1KEY", "KEY-NAME", "KEY.NAME", "KEY NAME", "ÜNICODE"],
 )
-def test_malformed_environment_identifier_is_rejected(tmp_path: Path, credential: str) -> None:
+def test_malformed_environment_identifier_is_rejected(tmp_path: Path, apiKeyEnv: str) -> None:
     profile = {
         "models": {
             "primary": {
                 "transport": "anthropic",
                 "model": "m",
-                "credential": credential,
+                "apiKeyEnv": apiKeyEnv,
             }
         },
         "modelRoles": {"default": "primary"},
@@ -134,7 +167,7 @@ def test_malformed_environment_identifier_is_rejected(tmp_path: Path, credential
 
 @pytest.mark.parametrize("count", [32])
 def test_accepts_server_collection_caps(count: int) -> None:
-    validate_solve_configuration(profile_with_counts(models=count, roles=count, credentials=count))
+    validate_solve_configuration(profile_with_counts(models=count, roles=count))
 
 
 @pytest.mark.parametrize(
@@ -142,7 +175,7 @@ def test_accepts_server_collection_caps(count: int) -> None:
     [
         (profile_with_counts(models=33), "models"),
         (profile_with_counts(roles=33), "modelRoles"),
-        (profile_with_counts(models=33, credentials=33), "models"),
+        (profile_with_counts(models=33), "models"),
     ],
 )
 def test_rejects_values_above_server_collection_caps(profile: dict[str, Any], message: str) -> None:
@@ -155,28 +188,28 @@ def test_accepts_server_dictionary_name_boundaries(length: int) -> None:
     name = "n" * length
     validate_solve_configuration(
         {
-            "models": {name: {"transport": "anthropic", "model": "m", "credential": "KEY"}},
+            "models": {name: {"transport": "anthropic", "model": "m", "apiKeyEnv": "KEY"}},
             "modelRoles": {"default": name, "r" * length: name},
         }
     )
 
 
-@pytest.mark.parametrize("field", ["model", "role", "credential"])
+@pytest.mark.parametrize("field", ["model", "role", "apiKeyEnv"])
 def test_rejects_dictionary_names_over_server_cap(field: str) -> None:
     long_name = "n" * 65
     profile: dict[str, Any] = {
-        "models": {"primary": {"transport": "anthropic", "model": "m", "credential": "KEY"}},
+        "models": {"primary": {"transport": "anthropic", "model": "m", "apiKeyEnv": "KEY"}},
         "modelRoles": {"default": "primary"},
     }
     if field == "model":
         profile = {
-            "models": {long_name: {"transport": "anthropic", "model": "m", "credential": "KEY"}},
+            "models": {long_name: {"transport": "anthropic", "model": "m", "apiKeyEnv": "KEY"}},
             "modelRoles": {"default": long_name},
         }
     elif field == "role":
         profile["modelRoles"] = {"default": "primary", long_name: "primary"}
     else:
-        profile["models"]["primary"]["credential"] = "K" * 65
+        profile["models"]["primary"]["apiKeyEnv"] = "K" * 65
     with pytest.raises(SolveProfileError):
         validate_solve_configuration(profile)
 
@@ -212,7 +245,7 @@ def test_rejects_max_output_tokens_over_server_cap() -> None:
 def test_accepts_server_whitespace_names_and_model_id() -> None:
     validate_solve_configuration(
         {
-            "models": {" ": {"transport": "anthropic", "model": " ", "credential": "KEY"}},
+            "models": {" ": {"transport": "anthropic", "model": " ", "apiKeyEnv": "KEY"}},
             "modelRoles": {"default": " ", " ": " "},
         }
     )
@@ -225,6 +258,13 @@ def test_accepts_server_whitespace_names_and_model_id() -> None:
         ({"models": PROFILE["models"]}, "modelRoles"),
         ({**PROFILE, "credentials": {}}, "credentials"),
         ({**PROFILE, "apiKey": "not-allowed"}, "apiKey"),
+        (
+            {
+                **PROFILE,
+                "models": {"primary": {**PROFILE["models"]["primary"], "credential": "KEY"}},
+            },
+            "credential",
+        ),
         ({**PROFILE, "ttlSeconds": 0}, "ttlSeconds"),
         ({**PROFILE, "ttlSeconds": True}, "ttlSeconds"),
         ({**PROFILE, "ttlSeconds": 86401}, "ttlSeconds"),
@@ -244,18 +284,18 @@ def test_rejects_unsafe_or_invalid_profile_shapes(
     ("models", "message"),
     [
         ({"": PROFILE["models"]["primary"]}, "1..64"),
-        ({"primary": {"model": "m", "credential": "KEY"}}, "transport"),
+        ({"primary": {"model": "m", "apiKeyEnv": "KEY"}}, "transport"),
         (
-            {"primary": {"transport": "unknown", "model": "m", "credential": "KEY"}},
+            {"primary": {"transport": "unknown", "model": "m", "apiKeyEnv": "KEY"}},
             "transport",
         ),
-        ({"primary": {"transport": "anthropic", "model": "", "credential": "KEY"}}, "model"),
+        ({"primary": {"transport": "anthropic", "model": "", "apiKeyEnv": "KEY"}}, "model"),
         (
             {
                 "primary": {
                     "transport": "anthropic",
                     "model": "m",
-                    "credential": "KEY",
+                    "apiKeyEnv": "KEY",
                     "extra": "unsafe",
                 }
             },
@@ -266,7 +306,7 @@ def test_rejects_unsafe_or_invalid_profile_shapes(
                 "primary": {
                     "transport": "anthropic",
                     "model": "m",
-                    "credential": "KEY",
+                    "apiKeyEnv": "KEY",
                     "options": {"temperature": 1},
                 }
             },
@@ -277,7 +317,7 @@ def test_rejects_unsafe_or_invalid_profile_shapes(
                 "primary": {
                     "transport": "anthropic",
                     "model": "m",
-                    "credential": "KEY",
+                    "apiKeyEnv": "KEY",
                     "options": {"maxOutputTokens": True},
                 }
             },
@@ -288,7 +328,7 @@ def test_rejects_unsafe_or_invalid_profile_shapes(
                 "primary": {
                     "transport": "anthropic",
                     "model": "m",
-                    "credential": "KEY",
+                    "apiKeyEnv": "KEY",
                     "options": {"maxOutputTokens": 0},
                 }
             },

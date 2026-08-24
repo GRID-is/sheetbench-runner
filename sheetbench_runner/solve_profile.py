@@ -9,23 +9,25 @@ from typing import Any
 
 MAX_MODELS = 32
 MAX_MODEL_ROLES = 32
-MAX_CREDENTIALS = 32
 MAX_DICTIONARY_NAME_LENGTH = 64
 MAX_MODEL_ID_LENGTH = 256
 MAX_OUTPUT_TOKENS = 1_000_000
+MAX_API_KEY_BYTES = 4096
+MAX_AGGREGATE_API_KEY_BYTES = 64 * 1024
 _PORTABLE_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_TRANSPORTS = {"anthropic", "openai-responses", "openai-compatible"}
 
 
 class SolveProfileError(ValueError):
-    """A solve profile or its credential environment is invalid."""
+    """A solve profile or its API-key environment is invalid."""
 
 
 @dataclass(frozen=True)
 class LoadedSolveProfile:
-    """Validated configuration plus process-memory-only credential values."""
+    """Validated configuration plus process-memory-only per-model API keys."""
 
     configuration: dict[str, Any]
-    credentials: dict[str, str] = field(repr=False)
+    api_keys: dict[str, str] = field(repr=False)
     default_model: str
 
 
@@ -35,34 +37,52 @@ def _require_object(value: object, field: str) -> dict[str, Any]:
     return value
 
 
-def _check_for_secret_fields(value: object, location: str = "profile") -> None:
+def _normalized_field(key: object) -> str:
+    return str(key).lower().replace("_", "").replace("-", "")
+
+
+def _check_profile_for_forbidden_fields(value: object, location: str = "profile") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
-            normalized = str(key).lower().replace("_", "").replace("-", "")
-            is_credential_value = normalized == "value" and value.get("type") == "api-key"
-            if normalized == "credentials" or is_credential_value:
+            normalized = _normalized_field(key)
+            if normalized in {"credential", "credentials", "apikey"}:
                 raise SolveProfileError(
-                    f"Solve profile must not contain secret field '{key}' at {location}"
+                    f"Solve profile must not contain unsafe field '{key}' at {location}"
                 )
-            _check_for_secret_fields(child, f"{location}.{key}")
+            _check_profile_for_forbidden_fields(child, f"{location}.{key}")
     elif isinstance(value, list):
         for index, child in enumerate(value):
-            _check_for_secret_fields(child, f"{location}[{index}]")
+            _check_profile_for_forbidden_fields(child, f"{location}[{index}]")
+
+
+def _check_sanitized_configuration_fields(value: object, location: str = "configuration") -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if _normalized_field(key) in {"credential", "credentials", "apikey", "apikeyenv"}:
+                raise SolveProfileError(
+                    f"Sanitized configuration contains forbidden field '{key}' at {location}"
+                )
+            _check_sanitized_configuration_fields(child, f"{location}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _check_sanitized_configuration_fields(child, f"{location}[{index}]")
 
 
 def _bounded_name(value: object) -> bool:
     return isinstance(value, str) and 0 < len(value) <= MAX_DICTIONARY_NAME_LENGTH
 
 
-def validate_solve_configuration(value: object) -> dict[str, Any]:
-    """Validate and return a credential-free solve configuration."""
+def _validate_common(value: object, *, require_api_key_env: bool) -> dict[str, Any]:
     profile = _require_object(value, "root")
     allowed_fields = {"models", "modelRoles", "ttlSeconds"}
     unknown_fields = set(profile) - allowed_fields
     if unknown_fields:
         field = sorted(unknown_fields)[0]
         raise SolveProfileError(f"Unknown or unsafe solve profile field: {field}")
-    _check_for_secret_fields(profile)
+    if require_api_key_env:
+        _check_profile_for_forbidden_fields(profile)
+    else:
+        _check_sanitized_configuration_fields(profile)
 
     models = _require_object(profile.get("models"), "models")
     if not models:
@@ -96,32 +116,33 @@ def validate_solve_configuration(value: object) -> dict[str, Any]:
                 f"Solve profile model names must contain 1..{MAX_DICTIONARY_NAME_LENGTH} characters"
             )
         model = _require_object(model_value, f"models.{name}")
-        allowed_model_fields = {"transport", "model", "credential", "options"}
+        allowed_model_fields = {"transport", "model", "options"}
+        if require_api_key_env:
+            allowed_model_fields.add("apiKeyEnv")
         unknown_model_fields = set(model) - allowed_model_fields
         if unknown_model_fields:
             field = sorted(unknown_model_fields)[0]
             raise SolveProfileError(f"Unknown solve profile field: models.{name}.{field}")
 
-        transport = model.get("transport")
-        if transport not in {"anthropic", "openai-responses", "openai-compatible"}:
+        if model.get("transport") not in _TRANSPORTS:
             raise SolveProfileError(f"models.{name}.transport is not supported")
-
         model_id = model.get("model")
         if not isinstance(model_id, str) or not 0 < len(model_id) <= MAX_MODEL_ID_LENGTH:
             raise SolveProfileError(
                 f"models.{name}.model must contain 1..{MAX_MODEL_ID_LENGTH} characters"
             )
 
-        credential = model.get("credential")
-        if (
-            not isinstance(credential, str)
-            or len(credential) > MAX_DICTIONARY_NAME_LENGTH
-            or _PORTABLE_ENV_NAME.fullmatch(credential) is None
-        ):
-            raise SolveProfileError(
-                f"models.{name}.credential must name an environment variable using "
-                "[A-Za-z_][A-Za-z0-9_]*"
-            )
+        if require_api_key_env:
+            api_key_env = model.get("apiKeyEnv")
+            if (
+                not isinstance(api_key_env, str)
+                or len(api_key_env) > MAX_DICTIONARY_NAME_LENGTH
+                or _PORTABLE_ENV_NAME.fullmatch(api_key_env) is None
+            ):
+                raise SolveProfileError(
+                    f"models.{name}.apiKeyEnv must name an environment variable using "
+                    "[A-Za-z_][A-Za-z0-9_]*"
+                )
 
         if "options" in model:
             options = _require_object(model["options"], f"models.{name}.options")
@@ -140,9 +161,8 @@ def validate_solve_configuration(value: object) -> dict[str, Any]:
                     or max_output_tokens > MAX_OUTPUT_TOKENS
                 ):
                     raise SolveProfileError(
-                        "models."
-                        f"{name}.options.maxOutputTokens must be a positive integer no greater "
-                        f"than {MAX_OUTPUT_TOKENS}"
+                        f"models.{name}.options.maxOutputTokens must be a positive integer no "
+                        f"greater than {MAX_OUTPUT_TOKENS}"
                     )
 
     for role, model_name in model_roles.items():
@@ -155,22 +175,38 @@ def validate_solve_configuration(value: object) -> dict[str, Any]:
             raise SolveProfileError(
                 f"modelRoles.{role} must name an existing configured model (got {model_name!r})"
             )
-
-    credential_names = {model["credential"] for model in models.values()}
-    if len(credential_names) > MAX_CREDENTIALS:
-        raise SolveProfileError(
-            f"Solve profile models must reference at most {MAX_CREDENTIALS} unique credentials"
-        )
-
-    default_name = model_roles.get("default")
-    if not isinstance(default_name, str):
+    if not isinstance(model_roles.get("default"), str):
         raise SolveProfileError("Solve profile modelRoles.default is required")
-
     return dict(profile)
 
 
+def validate_solve_configuration(value: object) -> dict[str, Any]:
+    """Validate and return a non-secret runner solve profile."""
+    return _validate_common(value, require_api_key_env=True)
+
+
+def validate_sanitized_configuration(value: object) -> dict[str, Any]:
+    """Validate a server configuration that contains no key fields."""
+    return _validate_common(value, require_api_key_env=False)
+
+
+def sanitized_configuration(profile: object) -> dict[str, Any]:
+    """Derive the exact server-visible sanitized configuration from a profile."""
+    validated = validate_solve_configuration(profile)
+    models = _require_object(validated["models"], "models")
+    sanitized_models = {
+        name: {
+            key: child
+            for key, child in _require_object(model, f"models.{name}").items()
+            if key != "apiKeyEnv"
+        }
+        for name, model in models.items()
+    }
+    return {**validated, "models": sanitized_models}
+
+
 def load_solve_profile(path: Path) -> LoadedSolveProfile:
-    """Load profile JSON and resolve credential-named environment variables."""
+    """Load profile JSON and resolve each model's API-key environment variable."""
     try:
         raw: object = json.loads(path.read_text())
     except FileNotFoundError as e:
@@ -181,29 +217,33 @@ def load_solve_profile(path: Path) -> LoadedSolveProfile:
     profile = validate_solve_configuration(raw)
     models = _require_object(profile["models"], "models")
     model_roles = _require_object(profile["modelRoles"], "modelRoles")
-
-    required_credentials: set[str] = set()
+    api_keys: dict[str, str] = {}
+    aggregate_bytes = 0
     for name, model_value in models.items():
         model = _require_object(model_value, f"models.{name}")
-        credential = model.get("credential")
-        assert isinstance(credential, str)
-        required_credentials.add(credential)
-
-    default_name = model_roles.get("default")
-    assert isinstance(default_name, str)
-
-    credentials: dict[str, str] = {}
-    for environment_name in sorted(required_credentials):
+        environment_name = model["apiKeyEnv"]
+        assert isinstance(environment_name, str)
         value = os.environ.get(environment_name)
         if not value or not value.strip():
             raise SolveProfileError(
                 f"Environment variable '{environment_name}' is not set or empty"
             )
-        credentials[environment_name] = value
+        value_bytes = len(value.encode("utf-8"))
+        if value_bytes > MAX_API_KEY_BYTES:
+            raise SolveProfileError(
+                f"API key from environment variable '{environment_name}' exceeds "
+                f"{MAX_API_KEY_BYTES} UTF-8 bytes"
+            )
+        aggregate_bytes += value_bytes
+        if aggregate_bytes > MAX_AGGREGATE_API_KEY_BYTES:
+            raise SolveProfileError(
+                f"Per-model API keys exceed {MAX_AGGREGATE_API_KEY_BYTES} aggregate UTF-8 bytes"
+            )
+        api_keys[name] = value
 
+    default_name = model_roles["default"]
+    assert isinstance(default_name, str)
     default = _require_object(models[default_name], f"models.{default_name}")
-    default_model = default.get("model")
-    if not isinstance(default_model, str) or not default_model:
-        raise SolveProfileError(f"models.{default_name}.model must be a non-empty string")
-
-    return LoadedSolveProfile(dict(profile), credentials, default_model)
+    default_model = default["model"]
+    assert isinstance(default_model, str)
+    return LoadedSolveProfile(dict(profile), api_keys, default_model)

@@ -17,14 +17,19 @@ from sheetbench_runner.infuser_base import InfuserPermanentError, InfuserTransie
 PRIMARY_MODEL: dict[str, object] = {
     "transport": "openai-compatible",
     "model": "opaque-model",
-    "credential": "OPENAI_API_KEY",
+    "apiKeyEnv": "OPENAI_API_KEY",
 }
 SOLVE_PROFILE = {
     "models": {"primary": PRIMARY_MODEL},
     "modelRoles": {"default": "primary"},
 }
 CONTEXT_TOKEN = base64.urlsafe_b64encode(b"c" * 32).decode().rstrip("=")
-EFFECTIVE_PROFILE = {**SOLVE_PROFILE, "ttlSeconds": 7200}
+SANITIZED_PRIMARY_MODEL = {"transport": "openai-compatible", "model": "opaque-model"}
+EFFECTIVE_PROFILE = {
+    "models": {"primary": SANITIZED_PRIMARY_MODEL},
+    "modelRoles": {"default": "primary"},
+    "ttlSeconds": 7200,
+}
 
 
 def context_response(
@@ -86,7 +91,7 @@ async def activate_context(client: InfuserClient) -> None:
             json=context_response(),
         )
     )
-    await client.create_solve_context(SOLVE_PROFILE, {"OPENAI_API_KEY": "test-secret"})
+    await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
 
 
 @respx.mock
@@ -113,9 +118,7 @@ async def test_context_lifecycle_uses_contract_headers_and_bodies(tmp_path: Path
     )
 
     async with InfuserClient("http://localhost:3000") as client:
-        created = await client.create_solve_context(
-            SOLVE_PROFILE, {"OPENAI_API_KEY": "test-secret"}
-        )
+        created = await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
         await client.upload_workbook(xlsx_file)
         await client.solve(workbook_id, "Test prompt")
         await client.delete_solve_context()
@@ -124,14 +127,88 @@ async def test_context_lifecycle_uses_contract_headers_and_bodies(tmp_path: Path
     creation = create_route.calls[0].request
     assert "X-Solve-Context" not in creation.headers
     assert json.loads(creation.content) == {
-        **SOLVE_PROFILE,
-        "credentials": {"OPENAI_API_KEY": {"type": "api-key", "value": "test-secret"}},
+        "models": {"primary": {**SANITIZED_PRIMARY_MODEL, "apiKey": "test-secret"}},
+        "modelRoles": {"default": "primary"},
     }
     for route in (upload_route, solve_route, delete_route):
         assert route.calls[0].request.headers["X-Solve-Context"] == CONTEXT_TOKEN
     assert json.loads(solve_route.calls[0].request.content) == {
         "workbookId": workbook_id,
         "messages": [{"role": "user", "content": "Test prompt"}],
+    }
+
+
+@respx.mock
+async def test_context_request_repeats_shared_keys_and_supports_different_keys() -> None:
+    profile = {
+        "models": {
+            "primary": {
+                "transport": "anthropic",
+                "model": "model-a",
+                "apiKeyEnv": "SHARED_KEY",
+            },
+            "reviewer": {
+                "transport": "openai-responses",
+                "model": "model-b",
+                "apiKeyEnv": "SHARED_KEY",
+            },
+            "judge": {
+                "transport": "openai-compatible",
+                "model": "model-c",
+                "apiKeyEnv": "OTHER_KEY",
+                "options": {"maxOutputTokens": 123},
+            },
+        },
+        "modelRoles": {"default": "primary", "review": "reviewer", "judge": "judge"},
+        "ttlSeconds": 900,
+    }
+    expected_configuration = {
+        "models": {
+            "primary": {"transport": "anthropic", "model": "model-a"},
+            "reviewer": {"transport": "openai-responses", "model": "model-b"},
+            "judge": {
+                "transport": "openai-compatible",
+                "model": "model-c",
+                "options": {"maxOutputTokens": 123},
+            },
+        },
+        "modelRoles": {"default": "primary", "review": "reviewer", "judge": "judge"},
+        "ttlSeconds": 900,
+    }
+    route = respx.post("http://localhost:3000/solve-contexts").mock(
+        return_value=httpx.Response(
+            201,
+            json=context_response(
+                expires_at=(datetime.now(UTC) + timedelta(seconds=900)).isoformat(),
+                configuration=expected_configuration,
+            ),
+        )
+    )
+
+    async with InfuserClient("http://localhost:3000") as client:
+        created = await client.create_solve_context(
+            profile,
+            {"primary": "shared-secret", "reviewer": "shared-secret", "judge": "other-secret"},
+        )
+
+    assert created.configuration == expected_configuration
+    assert json.loads(route.calls[0].request.content) == {
+        "models": {
+            "primary": {"transport": "anthropic", "model": "model-a", "apiKey": "shared-secret"},
+            "reviewer": {
+                "transport": "openai-responses",
+                "model": "model-b",
+                "apiKey": "shared-secret",
+            },
+            "judge": {
+                "transport": "openai-compatible",
+                "model": "model-c",
+                "options": {"maxOutputTokens": 123},
+                "apiKey": "other-secret",
+            },
+        },
+        "modelRoles": {"default": "primary", "review": "reviewer", "judge": "judge"},
+        "ttlSeconds": 900,
     }
 
 
@@ -147,13 +224,13 @@ async def test_upload_and_solve_require_a_context(tmp_path: Path) -> None:
 
 
 @respx.mock
-async def test_context_creation_error_never_exposes_credential_value() -> None:
+async def test_context_creation_error_never_exposes_apiKeyEnv_value() -> None:
     respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(400, text="invalid credential test-secret")
+        return_value=httpx.Response(400, text="invalid apiKeyEnv test-secret")
     )
     async with InfuserClient("http://localhost:3000") as client:
         with pytest.raises(InfuserPermanentError) as exc_info:
-            await client.create_solve_context(SOLVE_PROFILE, {"OPENAI_API_KEY": "test-secret"})
+            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
 
     assert "test-secret" not in str(exc_info.value)
 
@@ -161,27 +238,36 @@ async def test_context_creation_error_never_exposes_credential_value() -> None:
 @pytest.mark.parametrize(
     "configuration",
     [
-        {**SOLVE_PROFILE, "credentials": {"OPENAI_API_KEY": "test-secret"}},
+        {**EFFECTIVE_PROFILE, "credentials": {"primary": "test-secret"}},
         {
-            **SOLVE_PROFILE,
+            **EFFECTIVE_PROFILE,
             "models": {
                 "primary": {
-                    **PRIMARY_MODEL,
-                    "options": {"credential": {"type": "api-key", "value": "test-secret"}},
+                    **SANITIZED_PRIMARY_MODEL,
+                    "apiKeyEnv": "OPENAI_API_KEY",
                 }
             },
         },
         {
-            **SOLVE_PROFILE,
+            **EFFECTIVE_PROFILE,
             "models": {
                 "primary": {
-                    **PRIMARY_MODEL,
+                    **SANITIZED_PRIMARY_MODEL,
+                    "apiKey": "test-secret",
+                }
+            },
+        },
+        {
+            **EFFECTIVE_PROFILE,
+            "models": {
+                "primary": {
+                    **SANITIZED_PRIMARY_MODEL,
                     "model": "prefix-test-secret-suffix",
                 }
             },
         },
     ],
-    ids=["credentials", "credential-value-object", "embedded-resolved-secret"],
+    ids=["credentials", "apiKeyEnv", "apiKey", "embedded-resolved-secret"],
 )
 @respx.mock
 async def test_invalid_context_configuration_is_revoked_and_never_retained(
@@ -201,7 +287,7 @@ async def test_invalid_context_configuration_is_revoked_and_never_retained(
         with pytest.raises(
             InfuserPermanentError, match="Invalid solve context response"
         ) as exc_info:
-            await client.create_solve_context(SOLVE_PROFILE, {"OPENAI_API_KEY": "test-secret"})
+            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
         with pytest.raises(RuntimeError, match="solve context"):
             await client.solve("wb-123", "Test prompt")
 
@@ -209,6 +295,22 @@ async def test_invalid_context_configuration_is_revoked_and_never_retained(
     assert delete_route.call_count == 1
     assert delete_route.calls[0].request.headers["X-Solve-Context"] == CONTEXT_TOKEN
     assert "test-secret" not in str(exc_info.value)
+
+
+@respx.mock
+async def test_context_response_rejects_api_key_value_outside_configuration() -> None:
+    respx.post("http://localhost:3000/solve-contexts").mock(
+        return_value=httpx.Response(201, json=context_response())
+    )
+    delete_route = respx.delete("http://localhost:3000/solve-contexts/current").mock(
+        return_value=httpx.Response(204)
+    )
+
+    async with InfuserClient("http://localhost:3000") as client:
+        with pytest.raises(InfuserPermanentError, match="Invalid solve context response"):
+            await client.create_solve_context(SOLVE_PROFILE, {"primary": CONTEXT_TOKEN})
+
+    assert delete_route.call_count == 1
 
 
 @pytest.mark.parametrize(
@@ -221,12 +323,17 @@ async def test_invalid_context_configuration_is_revoked_and_never_retained(
         ({"expiresAt": "not-a-timestamp"}, True),
         ({"expiresAt": (datetime.now(UTC) - timedelta(seconds=1)).isoformat()}, True),
         ({"expiresAt": (datetime.now(UTC) + timedelta(days=2)).isoformat()}, True),
-        ({"configuration": {**SOLVE_PROFILE, "ttlSeconds": 7201}}, True),
+        ({"configuration": {**EFFECTIVE_PROFILE, "ttlSeconds": 7201}}, True),
         (
             {
                 "configuration": {
                     **EFFECTIVE_PROFILE,
-                    "models": {"primary": {**PRIMARY_MODEL, "model": "attacker-selected-model"}},
+                    "models": {
+                        "primary": {
+                            **SANITIZED_PRIMARY_MODEL,
+                            "model": "attacker-selected-model",
+                        }
+                    },
                 }
             },
             True,
@@ -261,7 +368,7 @@ async def test_malformed_context_response_revokes_only_a_usable_id(
 
     async with InfuserClient("http://localhost:3000") as client:
         with pytest.raises(InfuserPermanentError, match="Invalid solve context response"):
-            await client.create_solve_context(SOLVE_PROFILE, {"OPENAI_API_KEY": "test-secret"})
+            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
 
     assert delete_route.call_count == int(should_revoke)
     if should_revoke:
@@ -283,7 +390,7 @@ async def test_context_response_with_extra_top_level_field_is_revoked() -> None:
 
     async with InfuserClient("http://localhost:3000") as client:
         with pytest.raises(InfuserPermanentError, match="Invalid solve context response"):
-            await client.create_solve_context(SOLVE_PROFILE, {"OPENAI_API_KEY": "test-secret"})
+            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
 
     assert delete_route.call_count == 1
     assert delete_route.calls[0].request.headers["X-Solve-Context"] == CONTEXT_TOKEN
@@ -303,7 +410,7 @@ async def test_context_response_missing_later_field_is_revoked(missing_field: st
 
     async with InfuserClient("http://localhost:3000") as client:
         with pytest.raises(InfuserPermanentError, match="Invalid solve context response"):
-            await client.create_solve_context(SOLVE_PROFILE, {"OPENAI_API_KEY": "test-secret"})
+            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
 
     assert delete_route.call_count == 1
     assert delete_route.calls[0].request.headers["X-Solve-Context"] == CONTEXT_TOKEN
@@ -330,7 +437,7 @@ async def test_context_response_without_usable_id_is_not_revoked(invalid_id: obj
 
     async with InfuserClient("http://localhost:3000") as client:
         with pytest.raises(InfuserPermanentError, match="Invalid solve context response"):
-            await client.create_solve_context(SOLVE_PROFILE, {"OPENAI_API_KEY": "test-secret"})
+            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
 
     assert delete_route.call_count == 0
 
@@ -354,7 +461,7 @@ async def test_response_validation_error_survives_failed_revocation_without_leak
         with pytest.raises(
             InfuserPermanentError, match="Invalid solve context response"
         ) as exc_info:
-            await client.create_solve_context(SOLVE_PROFILE, {"OPENAI_API_KEY": "test-secret"})
+            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
         with pytest.raises(RuntimeError, match="solve context"):
             await client.solve("wb-123", "Test prompt")
 
@@ -615,7 +722,7 @@ async def test_grid_api_key_never_installs_authorization_header(
     )
     async with InfuserClient("http://localhost:3000") as client:
         await client.get_status()
-        await client.create_solve_context(SOLVE_PROFILE, {"OPENAI_API_KEY": "test-secret"})
+        await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
         await client.upload_workbook(xlsx_file)
         await client.solve(workbook_id, "Test prompt")
         await client.delete_solve_context()

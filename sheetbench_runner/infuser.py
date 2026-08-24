@@ -16,7 +16,12 @@ from .infuser_base import (
     InfuserPermanentError,
     handle_http_errors,
 )
-from .solve_profile import SolveProfileError, validate_solve_configuration
+from .solve_profile import (
+    SolveProfileError,
+    sanitized_configuration,
+    validate_sanitized_configuration,
+    validate_solve_configuration,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,16 +133,28 @@ class InfuserClient(InfuserBaseClient):
     async def create_solve_context(
         self,
         profile: Mapping[str, Any],
-        credentials: Mapping[str, str],
+        api_keys: Mapping[str, str],
     ) -> SolveContextResponse:
         """Create and retain one solve context for subsequent task requests."""
         if self._solve_context_id is not None:
             raise RuntimeError("A solve context already exists")
-        payload = dict(profile)
-        payload["credentials"] = {
-            name: {"type": "api-key", "value": value} for name, value in credentials.items()
-        }
-        # The server may echo submitted credentials in validation errors. Since
+        validated_profile = validate_solve_configuration(profile)
+        profile_models = validated_profile["models"]
+        assert isinstance(profile_models, dict)
+        if set(api_keys) != set(profile_models):
+            raise SolveProfileError("API keys must exactly match configured models")
+        payload_models: dict[str, dict[str, Any]] = {}
+        for name, model_value in profile_models.items():
+            assert isinstance(model_value, dict)
+            api_key = api_keys[name]
+            if not isinstance(api_key, str) or not api_key:
+                raise SolveProfileError(f"API key for model '{name}' must be a non-empty string")
+            payload_models[name] = {
+                key: value for key, value in model_value.items() if key != "apiKeyEnv"
+            }
+            payload_models[name]["apiKey"] = api_key
+        payload = {**validated_profile, "models": payload_models}
+        # The server may echo submitted API keys in validation errors. Since
         # every value in this request is sensitive, intentionally omit response
         # bodies from context-creation exceptions rather than attempting partial
         # redaction.
@@ -153,6 +170,7 @@ class InfuserClient(InfuserBaseClient):
 
         if not isinstance(data, Mapping):
             raise InfuserPermanentError("Invalid solve context response")
+        secrets = tuple(secret for secret in api_keys.values() if secret)
         try:
             context_id = _valid_context_token(data["id"])
         except (KeyError, TypeError, ValueError) as e:
@@ -160,6 +178,8 @@ class InfuserClient(InfuserBaseClient):
 
         self._solve_context_id = context_id
         try:
+            if self._contains_submitted_secret(data, secrets):
+                raise SolveProfileError("response contains submitted API-key material")
             if set(data) != {"id", "expiresAt", "configuration"}:
                 raise ValueError
 
@@ -169,12 +189,12 @@ class InfuserClient(InfuserBaseClient):
                 raise ValueError
             parsed_expiry = parsed_expiry.astimezone(UTC)
 
-            expected_configuration = validate_solve_configuration(profile)
+            expected_configuration = sanitized_configuration(validated_profile)
             expected_configuration = {
                 **expected_configuration,
                 "ttlSeconds": expected_configuration.get("ttlSeconds", _DEFAULT_TTL_SECONDS),
             }
-            configuration = validate_solve_configuration(data["configuration"])
+            configuration = validate_sanitized_configuration(data["configuration"])
             if configuration != expected_configuration:
                 raise ValueError
 
@@ -186,9 +206,6 @@ class InfuserClient(InfuserBaseClient):
             if parsed_expiry <= now or not earliest_expiry <= parsed_expiry <= latest_expiry:
                 raise ValueError
 
-            secrets = tuple(secret for secret in credentials.values() if secret)
-            if self._contains_submitted_secret(configuration, secrets):
-                raise SolveProfileError("configuration contains submitted credential material")
         except (KeyError, TypeError, ValueError, SolveProfileError) as e:
             primary_error = InfuserPermanentError("Invalid solve context response")
             try:
