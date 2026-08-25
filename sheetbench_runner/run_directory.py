@@ -12,16 +12,9 @@ from .entities import SCHEMA_VERSION, RunMetadata, TaskResult, TaskStatus
 from .solve_profile import SolveProfileError, validate_sanitized_configuration
 
 # Released sheetbench-runner master wrote the solve server /status response under
-# this run.json key. It is decoded for one-way migration and never written.
+# this run.json key. Legacy run.json files carry it, but its contents are never
+# read: it is not a canonical schema and holds nothing the migration needs.
 LEGACY_SOLVE_CONFIGURATION_KEY = "infuser_config"
-_RELEASED_METADATA_KEYS = {
-    "model",
-    "git_hash",
-    LEGACY_SOLVE_CONFIGURATION_KEY,
-    "test_set",
-    "notes",
-    "created_at",
-}
 _CANONICAL_METADATA_KEYS = {
     "schema_version",
     "model",
@@ -31,12 +24,18 @@ _CANONICAL_METADATA_KEYS = {
     "notes",
     "created_at",
 }
-_CONTEXT_CONFIGURATION_KEYS = {"models", "modelRoles", "ttlSeconds"}
-_RELEASED_STATUS_KEYS = {"default_model", "version", "status"}
 
 
-def _nonempty_string(value: object) -> bool:
-    return isinstance(value, str) and bool(value.strip())
+def _legacy_created_at(value: object) -> datetime:
+    """Parse a legacy created_at, defaulting to now for anything unusable."""
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.isoformat() == value:
+            return parsed
+    return datetime.now()
 
 
 class RunMetadataError(ValueError):
@@ -197,57 +196,37 @@ class RunDirectory:
         if not isinstance(data, dict):
             raise RunMetadataError(f"{self.run_json_path} is not a JSON object")
 
-        legacy = LEGACY_SOLVE_CONFIGURATION_KEY in data
         canonical = "solve_configuration" in data
-        if legacy and canonical:
-            raise RunMetadataError(
-                f"{self.run_json_path} contains both released and canonical configuration keys"
-            )
-        if legacy:
+        if not canonical:
+            # A run.json without canonical solve_configuration is legacy. The only
+            # historical value the resume decision needs is a usable model;
+            # everything else is copied when valid and defaulted otherwise.
+            # LEGACY_SOLVE_CONFIGURATION_KEY, if present, is ignored unread.
             model = data.get("model")
+            if not isinstance(model, str) or not model or model == "unknown":
+                raise RunMetadataError(f"{self.run_json_path} is not valid released metadata")
+
             git_hash = data.get("git_hash")
-            released_configuration = data.get(LEGACY_SOLVE_CONFIGURATION_KEY)
+            if not isinstance(git_hash, str) or not git_hash:
+                git_hash = "unknown"
+
             test_set = data.get("test_set")
-            notes = data.get("notes")
-            created_at = data.get("created_at")
-            if (
-                set(data) != _RELEASED_METADATA_KEYS
-                or not isinstance(model, str)
-                or not model
-                or model == "unknown"
-                or not isinstance(git_hash, str)
-                or not git_hash
-                or not isinstance(released_configuration, dict)
-                or bool(_CONTEXT_CONFIGURATION_KEYS.intersection(released_configuration))
-                or set(released_configuration) != _RELEASED_STATUS_KEYS
-                or not _nonempty_string(released_configuration.get("default_model"))
-                or not _nonempty_string(released_configuration.get("version"))
-                or not _nonempty_string(released_configuration.get("status"))
-                or not (
-                    test_set is None
-                    or (isinstance(test_set, int) and not isinstance(test_set, bool))
-                )
-                or not isinstance(notes, str)
-                or not isinstance(created_at, str)
+            if not (
+                test_set is None or (isinstance(test_set, int) and not isinstance(test_set, bool))
             ):
-                raise RunMetadataError(f"{self.run_json_path} is not valid released metadata")
-            try:
-                parsed_created_at = datetime.fromisoformat(created_at)
-            except ValueError as e:
-                raise RunMetadataError(
-                    f"{self.run_json_path} is not valid released metadata"
-                ) from e
-            if parsed_created_at.isoformat() != created_at:
-                raise RunMetadataError(f"{self.run_json_path} is not valid released metadata")
+                test_set = None
+
+            notes = data.get("notes")
+            if not isinstance(notes, str):
+                notes = ""
+
             return LegacyRunMetadata(
                 model=model,
                 git_hash=git_hash,
                 test_set=test_set,
                 notes=notes,
-                created_at=parsed_created_at,
+                created_at=_legacy_created_at(data.get("created_at")),
             )
-        if not canonical:
-            raise RunMetadataError(f"{self.run_json_path} has no solve configuration")
 
         if set(data) != _CANONICAL_METADATA_KEYS:
             raise RunMetadataError(f"{self.run_json_path} is not valid canonical metadata")

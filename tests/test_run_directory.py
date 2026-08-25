@@ -353,50 +353,27 @@ def test_read_metadata_decodes_released_legacy_document(temp_dir: Path) -> None:
     "document",
     [
         {**RELEASED_RUN_JSON, "solve_configuration": SOLVE_CONFIGURATION},
-        {**RELEASED_RUN_JSON, "schema_version": 2},
-        {
-            **RELEASED_RUN_JSON,
-            LEGACY_SOLVE_CONFIGURATION_KEY: SOLVE_CONFIGURATION,
-        },
-        {key: value for key, value in RELEASED_RUN_JSON.items() if key != "git_hash"},
-        {**RELEASED_RUN_JSON, "git_hash": None},
-        {**RELEASED_RUN_JSON, "test_set": True},
-        {**RELEASED_RUN_JSON, "notes": None},
-        {**RELEASED_RUN_JSON, "created_at": "not-a-timestamp"},
-        {**RELEASED_RUN_JSON, "created_at": "2026-01-02"},
-        {**RELEASED_RUN_JSON, "created_at": "2026-01-02 03:04:05"},
-        {**RELEASED_RUN_JSON, "created_at": "2026-01-02T03:04:05Z"},
-        {
-            **RELEASED_RUN_JSON,
-            LEGACY_SOLVE_CONFIGURATION_KEY: {
-                **RELEASED_RUN_JSON[LEGACY_SOLVE_CONFIGURATION_KEY],
-                "status": "",
-            },
-        },
         {"schema_version": 1, "model": "m", "git_hash": "h", "solve_configuration": {}},
         {"schema_version": 2, "git_hash": "h", "solve_configuration": SOLVE_CONFIGURATION},
         {"schema_version": 2, "model": "m", "git_hash": "h", "solve_configuration": []},
-        {"model": "m", "git_hash": "h"},
+        {key: value for key, value in RELEASED_RUN_JSON.items() if key != "model"},
+        {**RELEASED_RUN_JSON, "model": None},
+        {**RELEASED_RUN_JSON, "model": ""},
+        {**RELEASED_RUN_JSON, "model": "unknown"},
+        {**RELEASED_RUN_JSON, "model": 7},
         [],
         "not-an-object",
     ],
     ids=[
         "both-keys",
-        "schema-versioned-released-key",
-        "context-era-configuration-under-released-key",
-        "missing-historical-field",
-        "invalid-git-hash",
-        "invalid-test-set",
-        "invalid-notes",
-        "invalid-created-at",
-        "date-only-created-at",
-        "space-separated-created-at",
-        "normalized-timezone-created-at",
-        "empty-released-status-field",
         "wrong-schema-version",
-        "missing-model",
+        "missing-model-canonical",
         "configuration-not-an-object",
-        "no-configuration-key",
+        "missing-model-legacy",
+        "null-model-legacy",
+        "empty-model-legacy",
+        "unknown-model-legacy",
+        "wrong-type-model-legacy",
         "not-a-mapping",
         "not-json-object",
     ],
@@ -410,6 +387,131 @@ def test_read_metadata_fails_closed(temp_dir: Path, document: object) -> None:
     # Act / Assert
     with pytest.raises(RunMetadataError):
         RunDirectory(run_path).read_metadata()
+
+
+def test_read_metadata_decodes_legacy_document_without_infuser_config(temp_dir: Path) -> None:
+    """Real pre-solve run.json files never had infuser_config."""
+    # Arrange
+    run_path = temp_dir / "no-infuser-config-run"
+    run_path.mkdir()
+    document = {
+        "git_hash": "abc0001",
+        "model": "claude-sonnet-4-5",
+        "notes": "",
+        "test_set": None,
+    }
+    (run_path / "run.json").write_text(json.dumps(document))
+
+    # Act
+    actual = RunDirectory(run_path).read_metadata()
+
+    # Assert
+    assert isinstance(actual, LegacyRunMetadata)
+    assert actual.model == "claude-sonnet-4-5"
+    assert actual.git_hash == "abc0001"
+    assert actual.test_set is None
+    assert actual.notes == ""
+
+
+def test_read_metadata_decodes_legacy_document_with_only_model(temp_dir: Path) -> None:
+    # Arrange
+    run_path = temp_dir / "minimal-run"
+    run_path.mkdir()
+    (run_path / "run.json").write_text(json.dumps({"model": "claude-sonnet-4-5"}))
+
+    # Act
+    before = datetime.now()
+    actual = RunDirectory(run_path).read_metadata()
+    after = datetime.now()
+
+    # Assert
+    assert isinstance(actual, LegacyRunMetadata)
+    assert actual.model == "claude-sonnet-4-5"
+    assert actual.git_hash == "unknown"
+    assert actual.test_set is None
+    assert actual.notes == ""
+    assert before <= actual.created_at <= after
+
+
+def test_read_metadata_ignores_arbitrary_infuser_config_contents(temp_dir: Path) -> None:
+    # Arrange - infuser_config holding secret-like and unrelated keys
+    run_path = temp_dir / "arbitrary-infuser-config-run"
+    run_path.mkdir()
+    document = {
+        **RELEASED_RUN_JSON,
+        LEGACY_SOLVE_CONFIGURATION_KEY: {
+            "apiKey": "should-never-be-read",
+            "anthropicAdaptiveThinking": True,
+            "maxRetries": 3,
+        },
+    }
+    (run_path / "run.json").write_text(json.dumps(document))
+
+    # Act
+    actual = RunDirectory(run_path).read_metadata()
+
+    # Assert
+    assert actual == LegacyRunMetadata(
+        model="claude-sonnet-4-5",
+        git_hash="released-sha",
+        test_set=1,
+        notes="released run",
+        created_at=datetime.fromisoformat("2026-01-02T03:04:05"),
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"git_hash": None},
+        {"git_hash": 7},
+        {"test_set": True},
+        {"test_set": "1"},
+        {"notes": None},
+        {"notes": 7},
+        {"created_at": "not-a-timestamp"},
+        {"created_at": "2026-01-02"},
+        {"created_at": "2026-01-02 03:04:05"},
+        {"created_at": "2026-01-02T03:04:05Z"},
+    ],
+    ids=[
+        "null-git-hash",
+        "wrong-type-git-hash",
+        "boolean-test-set",
+        "string-test-set",
+        "null-notes",
+        "wrong-type-notes",
+        "unparseable-created-at",
+        "date-only-created-at",
+        "space-separated-created-at",
+        "normalized-timezone-created-at",
+    ],
+)
+def test_read_metadata_defaults_invalid_optional_legacy_fields(
+    temp_dir: Path, overrides: dict[str, object]
+) -> None:
+    # Arrange
+    run_path = temp_dir / "invalid-optional-fields-run"
+    run_path.mkdir()
+    document = {**RELEASED_RUN_JSON, **overrides}
+    (run_path / "run.json").write_text(json.dumps(document))
+
+    # Act
+    before = datetime.now()
+    actual = RunDirectory(run_path).read_metadata()
+    after = datetime.now()
+
+    # Assert
+    assert isinstance(actual, LegacyRunMetadata)
+    assert actual.model == "claude-sonnet-4-5"
+    if "git_hash" in overrides:
+        assert actual.git_hash == "unknown"
+    if "test_set" in overrides:
+        assert actual.test_set is None
+    if "notes" in overrides:
+        assert actual.notes == ""
+    if "created_at" in overrides:
+        assert before <= actual.created_at <= after
 
 
 def test_read_metadata_rejects_unsafe_canonical_configuration(temp_dir: Path) -> None:

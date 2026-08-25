@@ -492,6 +492,85 @@ async def test_released_run_with_a_different_model_fails_before_context_creation
     assert "artifact-forbidden-secret" not in str(exc_info.value)
 
 
+@respx.mock
+async def test_real_legacy_run_without_infuser_config_is_migrated(
+    tmp_path: Path,
+    sample_dataset_dir: Path,
+    sample_task: Task,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real pre-solve run.json files never had infuser_config or created_at."""
+    # Arrange
+    monkeypatch.setenv("OPAQUE_ENV", "secret")
+    monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=RunStats(total_tasks=1)))
+    create_route, status_route, delete_route = context_routes()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(
+        json.dumps({"model": "opaque-model", "git_hash": "abc0001", "notes": "", "test_set": None})
+    )
+    (run_dir / "results.json").write_text("[]")
+
+    # Act
+    await run(
+        dataset_path=sample_dataset_dir,
+        run_dir_path=run_dir,
+        solve_server_url="http://localhost:3000",
+        solve_profile_path=write_profile(tmp_path / "profile.json"),
+        tasks=[sample_task],
+    )
+
+    # Assert
+    assert create_route.call_count == 1
+    assert delete_route.call_count == 1
+    assert status_route.call_count == 0
+    migrated = json.loads((run_dir / "run.json").read_text())
+    assert migrated["schema_version"] == 2
+    assert migrated["model"] == "opaque-model"
+    assert migrated["git_hash"] == "abc0001"
+    assert migrated["solve_configuration"] == SANITIZED_CONFIGURATION
+    assert migrated["test_set"] is None
+    assert migrated["notes"] == ""
+
+
+@respx.mock
+async def test_legacy_run_with_secret_shaped_infuser_config_is_migrated_without_leaking_it(
+    tmp_path: Path,
+    sample_dataset_dir: Path,
+    sample_task: Task,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange
+    monkeypatch.setenv("OPAQUE_ENV", "secret")
+    monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=RunStats(total_tasks=1)))
+    create_route, status_route, delete_route = context_routes()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    original_run_json = released_run_json(
+        infuser_config={"apiKey": "artifact-forbidden-secret", "maxRetries": 3}
+    )
+    (run_dir / "run.json").write_text(original_run_json)
+    (run_dir / "results.json").write_text("[]")
+
+    # Act
+    await run(
+        dataset_path=sample_dataset_dir,
+        run_dir_path=run_dir,
+        solve_server_url="http://localhost:3000",
+        solve_profile_path=write_profile(tmp_path / "profile.json"),
+        tasks=[sample_task],
+    )
+
+    # Assert
+    assert create_route.call_count == 1
+    assert delete_route.call_count == 1
+    assert status_route.call_count == 0
+    migrated_text = (run_dir / "run.json").read_text()
+    assert "artifact-forbidden-secret" not in migrated_text
+    assert "infuser_config" not in migrated_text
+    assert json.loads(migrated_text)["model"] == "opaque-model"
+
+
 @pytest.mark.parametrize(
     "historical_metadata",
     [{"model": "unknown"}, {"model": None}, {"model": 7}],
