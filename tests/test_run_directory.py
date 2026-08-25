@@ -9,7 +9,6 @@ import pytest
 
 from sheetbench_runner.entities import RunMetadata, TaskResult, TaskStatus
 from sheetbench_runner.run_directory import (
-    LEGACY_SOLVE_CONFIGURATION_KEY,
     LegacyRunMetadata,
     RunDirectory,
     RunMetadataError,
@@ -24,7 +23,7 @@ SOLVE_CONFIGURATION: dict[str, Any] = {
 RELEASED_RUN_JSON: dict[str, Any] = {
     "model": "claude-sonnet-4-5",
     "git_hash": "released-sha",
-    LEGACY_SOLVE_CONFIGURATION_KEY: {
+    "infuser_config": {
         "default_model": "claude-sonnet-4-5",
         "version": "released-sha",
         "status": "healthy",
@@ -433,33 +432,6 @@ def test_read_metadata_decodes_legacy_document_with_only_model(temp_dir: Path) -
     assert before <= actual.created_at <= after
 
 
-def test_read_metadata_ignores_arbitrary_infuser_config_contents(temp_dir: Path) -> None:
-    # Arrange - infuser_config holding secret-like and unrelated keys
-    run_path = temp_dir / "arbitrary-infuser-config-run"
-    run_path.mkdir()
-    document = {
-        **RELEASED_RUN_JSON,
-        LEGACY_SOLVE_CONFIGURATION_KEY: {
-            "apiKey": "should-never-be-read",
-            "anthropicAdaptiveThinking": True,
-            "maxRetries": 3,
-        },
-    }
-    (run_path / "run.json").write_text(json.dumps(document))
-
-    # Act
-    actual = RunDirectory(run_path).read_metadata()
-
-    # Assert
-    assert actual == LegacyRunMetadata(
-        model="claude-sonnet-4-5",
-        git_hash="released-sha",
-        test_set=1,
-        notes="released run",
-        created_at=datetime.fromisoformat("2026-01-02T03:04:05"),
-    )
-
-
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -573,9 +545,7 @@ def test_read_metadata_rejects_unknown_canonical_fields(
         RunDirectory(run_path).read_metadata()
 
 
-def test_migrating_released_metadata_preserves_history_and_drops_legacy_key(
-    temp_dir: Path,
-) -> None:
+def test_migrating_released_metadata_preserves_history(temp_dir: Path) -> None:
     # Arrange
     run_path = temp_dir / "migrate-run"
     run_path.mkdir()

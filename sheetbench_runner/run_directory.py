@@ -11,10 +11,6 @@ from typing import Any
 from .entities import SCHEMA_VERSION, RunMetadata, TaskResult, TaskStatus
 from .solve_profile import SolveProfileError, validate_sanitized_configuration
 
-# Released sheetbench-runner master wrote the solve server /status response under
-# this run.json key. Legacy run.json files carry it, but its contents are never
-# read: it is not a canonical schema and holds nothing the migration needs.
-LEGACY_SOLVE_CONFIGURATION_KEY = "infuser_config"
 _CANONICAL_METADATA_KEYS = {
     "schema_version",
     "model",
@@ -198,10 +194,6 @@ class RunDirectory:
 
         canonical = "solve_configuration" in data
         if not canonical:
-            # A run.json without canonical solve_configuration is legacy. The only
-            # historical value the resume decision needs is a usable model;
-            # everything else is copied when valid and defaulted otherwise.
-            # LEGACY_SOLVE_CONFIGURATION_KEY, if present, is ignored unread.
             model = data.get("model")
             if not isinstance(model, str) or not model or model == "unknown":
                 raise RunMetadataError(f"{self.run_json_path} is not valid released metadata")
