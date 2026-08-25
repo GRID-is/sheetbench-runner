@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 MAX_MODELS = 32
 MAX_MODEL_ROLES = 32
@@ -14,6 +14,7 @@ MAX_MODEL_ID_LENGTH = 256
 MAX_OUTPUT_TOKENS = 1_000_000
 MAX_API_KEY_BYTES = 4096
 MAX_AGGREGATE_API_KEY_BYTES = 64 * 1024
+MAX_CONTEXT_TTL_SECONDS = 86400
 _PORTABLE_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _TRANSPORTS = {"anthropic", "openai-responses", "openai-compatible"}
 
@@ -104,10 +105,11 @@ def _validate_common(value: object, *, require_api_key_env: bool) -> dict[str, A
         not isinstance(ttl_seconds, int)
         or isinstance(ttl_seconds, bool)
         or ttl_seconds <= 0
-        or ttl_seconds > 86400
+        or ttl_seconds > MAX_CONTEXT_TTL_SECONDS
     ):
         raise SolveProfileError(
-            "Solve profile field 'ttlSeconds' must be a positive integer no greater than 86400"
+            "Solve profile field 'ttlSeconds' must be a positive integer no greater than "
+            f"{MAX_CONTEXT_TTL_SECONDS}"
         )
 
     for name, model_value in models.items():
@@ -215,14 +217,17 @@ def load_solve_profile(path: Path) -> LoadedSolveProfile:
         raise SolveProfileError(f"Could not load solve profile {path}: {e}") from e
 
     profile = validate_solve_configuration(raw)
+    profile = {
+        **profile,
+        "ttlSeconds": profile.get("ttlSeconds", MAX_CONTEXT_TTL_SECONDS),
+    }
     models = _require_object(profile["models"], "models")
     model_roles = _require_object(profile["modelRoles"], "modelRoles")
     api_keys: dict[str, str] = {}
     aggregate_bytes = 0
     for name, model_value in models.items():
         model = _require_object(model_value, f"models.{name}")
-        environment_name = model["apiKeyEnv"]
-        assert isinstance(environment_name, str)
+        environment_name = cast(str, model["apiKeyEnv"])
         value = os.environ.get(environment_name)
         if not value or not value.strip():
             raise SolveProfileError(
@@ -241,9 +246,7 @@ def load_solve_profile(path: Path) -> LoadedSolveProfile:
             )
         api_keys[name] = value
 
-    default_name = model_roles["default"]
-    assert isinstance(default_name, str)
+    default_name = cast(str, model_roles["default"])
     default = _require_object(models[default_name], f"models.{default_name}")
-    default_model = default["model"]
-    assert isinstance(default_model, str)
+    default_model = cast(str, default["model"])
     return LoadedSolveProfile(dict(profile), api_keys, default_model)

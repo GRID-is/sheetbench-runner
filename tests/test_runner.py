@@ -1,6 +1,7 @@
 """Tests for once-per-run solve context orchestration."""
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,11 @@ import respx
 
 from sheetbench_runner.entities import InfuserUsage, Task
 from sheetbench_runner.infuser import SolveResponse
-from sheetbench_runner.infuser_base import InfuserPermanentError, InfuserTransientError
+from sheetbench_runner.infuser_base import (
+    InfuserContextExpiredError,
+    InfuserPermanentError,
+    InfuserTransientError,
+)
 from sheetbench_runner.run_directory import RunDirectory
 from sheetbench_runner.runner import RunStats, TaskRunner, run
 from sheetbench_runner.solve_profile import SolveProfileError
@@ -34,7 +39,7 @@ SANITIZED_MODEL: dict[str, object] = {
 SANITIZED_CONFIGURATION = {
     "models": {"primary": SANITIZED_MODEL},
     "modelRoles": {"default": "primary"},
-    "ttlSeconds": 7200,
+    "ttlSeconds": 86400,
 }
 CONTEXT_TOKEN = "Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M"
 
@@ -50,7 +55,7 @@ def context_routes() -> tuple[respx.Route, respx.Route, respx.Route]:
             201,
             json={
                 "id": CONTEXT_TOKEN,
-                "expiresAt": (datetime.now(UTC) + timedelta(seconds=7200)).isoformat(),
+                "expiresAt": (datetime.now(UTC) + timedelta(seconds=86400)).isoformat(),
                 "configuration": SANITIZED_CONFIGURATION,
             },
         )
@@ -152,6 +157,35 @@ async def test_run_propagates_cleanup_failure_after_successful_work(
     assert delete_route.call_count == 1
 
 
+@respx.mock
+async def test_run_accepts_expired_context_during_final_cleanup(
+    tmp_path: Path,
+    sample_dataset_dir: Path,
+    sample_task: Task,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange
+    monkeypatch.setenv("OPAQUE_ENV", "secret")
+    expected = RunStats(total_tasks=1, errors=1)
+    monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=expected))
+    create_route, _, delete_route = context_routes()
+    delete_route.mock(return_value=httpx.Response(401, json={"error": "Invalid solve context"}))
+
+    # Act
+    actual = await run(
+        dataset_path=sample_dataset_dir,
+        run_dir_path=tmp_path / "run",
+        infuser_url="http://localhost:3000",
+        solve_profile_path=write_profile(tmp_path / "profile.json"),
+        tasks=[sample_task],
+    )
+
+    # Assert
+    assert actual is expected
+    assert create_route.call_count == 1
+    assert delete_route.call_count == 1
+
+
 @pytest.mark.parametrize(
     "configuration",
     [
@@ -191,7 +225,7 @@ async def test_untrusted_context_configuration_is_never_written_to_run_artifacts
             201,
             json={
                 "id": CONTEXT_TOKEN,
-                "expiresAt": (datetime.now(UTC) + timedelta(seconds=7200)).isoformat(),
+                "expiresAt": (datetime.now(UTC) + timedelta(seconds=86400)).isoformat(),
                 "configuration": configuration,
             },
         )
@@ -375,7 +409,8 @@ async def test_pure_reevaluation_does_no_server_work(
     )
 
     assert stats.total_tasks == 1
-    assert stats.skipped == 1
+    assert stats.completed == 0
+    assert stats.skipped == 0
     assert not respx.calls
 
 
@@ -460,3 +495,77 @@ async def test_task_runner_rejects_solve_artifacts_containing_sensitive_values(
     assert not (run_path / f"{sample_task.id}-output.xlsx").exists()
     artifacts = b"".join(path.read_bytes() for path in run_path.iterdir() if path.is_file())
     assert sensitive_value.encode() not in artifacts
+
+
+async def test_context_expiry_stops_queued_tasks(
+    tmp_path: Path,
+    sample_task: Task,
+) -> None:
+    # Arrange
+    run_path = tmp_path / "run"
+    run_path.mkdir()
+    tasks = [replace(sample_task, id=f"task-{index}") for index in range(3)]
+    infuser = Mock()
+    infuser.upload_workbook = AsyncMock(
+        side_effect=InfuserContextExpiredError("Upload failed because solve context expired")
+    )
+    infuser.solve = AsyncMock()
+    dataset = Mock()
+    dataset.get_input_path.return_value = tmp_path / "input.xlsx"
+    runner = TaskRunner(
+        infuser=infuser,
+        evaluator=Mock(),
+        dataset=dataset,
+        run_dir=RunDirectory(run_path),
+        concurrency=1,
+    )
+
+    # Act
+    stats = await runner.run_all(tasks)
+
+    # Assert
+    assert infuser.upload_workbook.await_count == 1
+    infuser.solve.assert_not_awaited()
+    assert stats.errors == 3
+
+
+async def test_missing_output_workbook_still_writes_transcript(
+    tmp_path: Path,
+    sample_task: Task,
+) -> None:
+    # Arrange
+    run_path = tmp_path / "run"
+    run_path.mkdir()
+    input_path = tmp_path / "input.xlsx"
+    input_path.write_bytes(b"input")
+    transcript = {"error": "Workbook export failed", "messages": []}
+    infuser = Mock()
+    infuser.upload_workbook = AsyncMock(return_value="wb-123")
+    infuser.solve = AsyncMock(
+        return_value=SolveResponse(
+            id="solve-wb-123",
+            model="opaque-model",
+            workbook_id="wb-123",
+            usage=InfuserUsage(1, 0, 2, 3),
+            output_xlsx=None,
+            transcript=transcript,
+        )
+    )
+    dataset = Mock()
+    dataset.get_input_path.return_value = input_path
+    evaluator = Mock()
+    runner = TaskRunner(
+        infuser=infuser,
+        evaluator=evaluator,
+        dataset=dataset,
+        run_dir=RunDirectory(run_path),
+    )
+
+    # Act
+    stats = await runner.run_all([sample_task])
+
+    # Assert
+    transcript_path = run_path / f"{sample_task.id}-transcript.json"
+    assert json.loads(transcript_path.read_text()) == transcript
+    evaluator.evaluate.assert_not_called()
+    assert stats.errors == 1

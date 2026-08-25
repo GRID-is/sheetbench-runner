@@ -9,5 +9,5 @@
   "modelRoles": {
     "default": "primary"
   },
-  "ttlSeconds": 3600
+  "ttlSeconds": 86400
 }

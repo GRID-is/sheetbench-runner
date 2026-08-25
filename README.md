@@ -114,7 +114,11 @@ variable or name different variables. The runner resolves each key before HTTP a
 submits it inline as that model's `apiKey`; no top-level credentials object is sent.
 See `solve-profile.example.json` for the shape.
 
-For every non-reevaluation invocation, the runner creates one short-lived solve
+When omitted, `ttlSeconds` defaults to 86,400 seconds, the server maximum, so a
+full benchmark run can share one context. A shorter explicit value must cover the
+whole invocation. The context is still deleted immediately when the invocation exits.
+
+For every non-reevaluation invocation, the runner creates one ephemeral solve
 context before running tasks, uses it for all workbook uploads and solves, and
 deletes it on exit. API key values and the context ID remain in process memory
 and are never written to run artifacts. Run metadata stores only the server's

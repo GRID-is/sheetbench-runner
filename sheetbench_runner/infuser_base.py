@@ -32,30 +32,32 @@ class InfuserPermanentError(InfuserError):
     pass
 
 
+class InfuserContextExpiredError(InfuserTransientError):
+    """The ephemeral solve context is no longer accepted by the server."""
+
+    pass
+
+
 # Limit error message length for readability
 _ERROR_TEXT_MAX_LENGTH = 200
 
 
-def _to_optional_int(value: object) -> int | None:
-    """Convert a value to an optional int."""
-    if value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, (str, float)):
-        return int(value)
-    return None
-
-
 @asynccontextmanager
 async def handle_http_errors(
-    operation: str, *, include_response_body: bool = True
+    operation: str,
+    *,
+    include_response_body: bool = True,
+    context_protected: bool = False,
 ) -> AsyncIterator[None]:
     """Handle HTTP errors consistently across all operations."""
     try:
         yield
     except httpx.HTTPStatusError as e:
         detail = f": {e.response.text[:_ERROR_TEXT_MAX_LENGTH]}" if include_response_body else ""
+        if context_protected and e.response.status_code == 401:
+            raise InfuserContextExpiredError(
+                f"{operation} failed because solve context expired"
+            ) from e
         if e.response.status_code >= 500:
             raise InfuserTransientError(
                 f"{operation} error {e.response.status_code}{detail}"

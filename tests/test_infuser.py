@@ -12,7 +12,11 @@ import pytest
 import respx
 
 from sheetbench_runner.infuser import InfuserClient, SolveResponse
-from sheetbench_runner.infuser_base import InfuserPermanentError, InfuserTransientError
+from sheetbench_runner.infuser_base import (
+    InfuserContextExpiredError,
+    InfuserPermanentError,
+    InfuserTransientError,
+)
 
 PRIMARY_MODEL: dict[str, object] = {
     "transport": "openai-compatible",
@@ -378,9 +382,10 @@ async def test_malformed_context_response_revokes_only_a_usable_id(
 
 
 @respx.mock
-async def test_context_response_with_extra_top_level_field_is_revoked() -> None:
+async def test_context_response_accepts_additive_top_level_fields() -> None:
+    # Arrange
     response_data = context_response()
-    response_data["unexpected"] = "must-not-be-accepted"
+    response_data["serverVersion"] = "next"
     respx.post("http://localhost:3000/solve-contexts").mock(
         return_value=httpx.Response(201, json=response_data)
     )
@@ -388,10 +393,13 @@ async def test_context_response_with_extra_top_level_field_is_revoked() -> None:
         return_value=httpx.Response(204)
     )
 
+    # Act
     async with InfuserClient("http://localhost:3000") as client:
-        with pytest.raises(InfuserPermanentError, match="Invalid solve context response"):
-            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
+        context = await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
+        await client.delete_solve_context()
 
+    # Assert
+    assert context.configuration == EFFECTIVE_PROFILE
     assert delete_route.call_count == 1
     assert delete_route.calls[0].request.headers["X-Solve-Context"] == CONTEXT_TOKEN
 
@@ -499,6 +507,115 @@ async def test_upload_and_solve_success(tmp_path: Path) -> None:
     assert response.usage.turns == 5
     assert response.output_xlsx == b"fake-xlsx-bytes"
     assert response.transcript == {"messages": [{"role": "assistant", "content": "Done"}]}
+
+
+@respx.mock
+async def test_upload_accepts_additive_response_fields(tmp_path: Path) -> None:
+    # Arrange
+    xlsx_file = tmp_path / "test.xlsx"
+    xlsx_file.write_bytes(b"fake-xlsx-content")
+    workbook_uuid = "123e4567-e89b-42d3-a456-426614174000"
+    respx.post("http://localhost:3000/workbooks/upload").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": workbook_uuid,
+                "name": "test.xlsx",
+                "sheets": ["Sheet1"],
+                "revisions": 1,
+            },
+        )
+    )
+
+    # Act
+    async with InfuserClient("http://localhost:3000") as client:
+        await activate_context(client)
+        workbook_id = await client.upload_workbook(xlsx_file)
+
+    # Assert
+    assert workbook_id == workbook_uuid
+
+
+@respx.mock
+async def test_solve_without_output_workbook_preserves_transcript() -> None:
+    # Arrange
+    body = solve_response()
+    del body["output_xlsx_base64"]
+    body["transcript"] = {"error": "Workbook export failed", "messages": []}
+    respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
+
+    # Act
+    async with InfuserClient("http://localhost:3000") as client:
+        await activate_context(client)
+        response = await client.solve("wb-123", "Test prompt")
+
+    # Assert
+    assert response.output_xlsx is None
+    assert response.transcript == {"error": "Workbook export failed", "messages": []}
+
+
+@respx.mock
+async def test_solve_accepts_additive_response_fields() -> None:
+    # Arrange
+    body = solve_response()
+    body["warnings"] = []
+    choices = body["choices"]
+    assert isinstance(choices, list)
+    choice = choices[0]
+    assert isinstance(choice, dict)
+    choice["provider_metadata"] = {"request_id": "request-123"}
+    message = choice["message"]
+    assert isinstance(message, dict)
+    message["annotations"] = []
+    usage = body["usage"]
+    assert isinstance(usage, dict)
+    usage["cached_input_tokens"] = 10
+    respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
+
+    # Act
+    async with InfuserClient("http://localhost:3000") as client:
+        await activate_context(client)
+        response = await client.solve("wb-123", "Test prompt")
+
+    # Assert
+    assert response.output_xlsx == b"fake-xlsx-bytes"
+    assert response.usage.input_tokens == 1000
+
+
+@pytest.mark.parametrize("separator", ["\n", "\r\n", " ", "\t"])
+@respx.mock
+async def test_solve_accepts_whitespace_in_output_workbook_base64(separator: str) -> None:
+    # Arrange
+    body = solve_response()
+    encoded = body["output_xlsx_base64"]
+    assert isinstance(encoded, str)
+    body["output_xlsx_base64"] = separator.join((encoded[:8], encoded[8:]))
+    respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
+
+    # Act
+    async with InfuserClient("http://localhost:3000") as client:
+        await activate_context(client)
+        response = await client.solve("wb-123", "Test prompt")
+
+    # Assert
+    assert response.output_xlsx == b"fake-xlsx-bytes"
+
+
+@pytest.mark.parametrize("separator", ["\v", "\f", "\u00a0"])
+@respx.mock
+async def test_solve_rejects_other_whitespace_in_output_workbook_base64(separator: str) -> None:
+    # Arrange
+    body = solve_response()
+    encoded = body["output_xlsx_base64"]
+    assert isinstance(encoded, str)
+    body["output_xlsx_base64"] = separator.join((encoded[:8], encoded[8:]))
+    respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
+
+    # Act and assert
+    async with InfuserClient("http://localhost:3000") as client:
+        await activate_context(client)
+        with pytest.raises(InfuserPermanentError, match="Invalid solve response"):
+            await client.solve("wb-123", "Test prompt")
 
 
 @pytest.mark.parametrize(
@@ -675,6 +792,54 @@ async def test_upload_connection_error_raises_transient(tmp_path: Path) -> None:
         await activate_context(client)
         with pytest.raises(InfuserTransientError, match="Connection"):
             await client.upload_workbook(xlsx_file)
+
+
+@respx.mock
+async def test_upload_401_is_retryable_context_expiry(tmp_path: Path) -> None:
+    # Arrange
+    xlsx_file = tmp_path / "test.xlsx"
+    xlsx_file.write_bytes(b"fake-xlsx-content")
+    respx.post("http://localhost:3000/workbooks/upload").mock(
+        return_value=httpx.Response(401, json={"error": "Invalid solve context"})
+    )
+
+    # Act and assert
+    async with InfuserClient("http://localhost:3000") as client:
+        await activate_context(client)
+        with pytest.raises(InfuserContextExpiredError, match="solve context expired"):
+            await client.upload_workbook(xlsx_file)
+
+
+@respx.mock
+async def test_solve_401_is_retryable_context_expiry() -> None:
+    # Arrange
+    respx.post("http://localhost:3000/solve").mock(
+        return_value=httpx.Response(401, json={"error": "Invalid solve context"})
+    )
+
+    # Act and assert
+    async with InfuserClient("http://localhost:3000") as client:
+        await activate_context(client)
+        with pytest.raises(InfuserContextExpiredError, match="solve context expired"):
+            await client.solve("wb-123", "Test prompt")
+
+
+@respx.mock
+async def test_delete_accepts_already_expired_context() -> None:
+    # Arrange
+    delete_route = respx.delete("http://localhost:3000/solve-contexts/current").mock(
+        return_value=httpx.Response(401, json={"error": "Invalid solve context"})
+    )
+
+    # Act
+    async with InfuserClient("http://localhost:3000") as client:
+        await activate_context(client)
+        await client.delete_solve_context()
+
+        # Assert
+        with pytest.raises(RuntimeError, match="solve context"):
+            await client.solve("wb-123", "Test prompt")
+    assert delete_route.call_count == 1
 
 
 @respx.mock

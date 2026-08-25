@@ -65,6 +65,21 @@ def test_resolves_two_arbitrary_environment_names(
     assert loaded.default_model == "model-v9"
 
 
+def test_loaded_profile_defaults_to_maximum_context_ttl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange
+    profile = {key: value for key, value in PROFILE.items() if key != "ttlSeconds"}
+    monkeypatch.setenv("FIRST_KEY", "first-secret")
+    monkeypatch.setenv("SECOND_KEY", "second-secret")
+
+    # Act
+    loaded = load_solve_profile(write_profile(tmp_path / "profile.json", profile))
+
+    # Assert
+    assert loaded.configuration["ttlSeconds"] == 86400
+
+
 def test_shared_environment_name_repeats_key_for_each_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

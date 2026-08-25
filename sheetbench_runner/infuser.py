@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 from uuid import UUID
 
 from .entities import InfuserUsage
@@ -25,9 +25,8 @@ from .solve_profile import (
 
 logger = logging.getLogger(__name__)
 
-# A SpreadsheetBench input is currently capped at 1 MiB by the solve server. These
-# deliberately generous client-side limits permit substantial XLSX expansion while
-# preventing a successful response from consuming unbounded memory.
+# The solve server accepts workbook uploads up to 16 MiB. These larger response
+# limits permit XLSX expansion while preventing unbounded response buffering.
 MAX_WORKBOOK_BYTES = 32 * 1024 * 1024
 MAX_WORKBOOK_BASE64_BYTES = ((MAX_WORKBOOK_BYTES + 2) // 3) * 4
 MAX_SOLVE_RESPONSE_BYTES = MAX_WORKBOOK_BASE64_BYTES + 8 * 1024 * 1024
@@ -128,6 +127,8 @@ class InfuserClient(InfuserBaseClient):
                 f"{self.base_url}/solve-contexts/current",
                 headers={"X-Solve-Context": context_id},
             )
+            if response.status_code == 401:
+                return
             response.raise_for_status()
 
     async def create_solve_context(
@@ -139,18 +140,17 @@ class InfuserClient(InfuserBaseClient):
         if self._solve_context_id is not None:
             raise RuntimeError("A solve context already exists")
         validated_profile = validate_solve_configuration(profile)
-        profile_models = validated_profile["models"]
-        assert isinstance(profile_models, dict)
+        profile_models = cast(dict[str, Any], validated_profile["models"])
         if set(api_keys) != set(profile_models):
             raise SolveProfileError("API keys must exactly match configured models")
         payload_models: dict[str, dict[str, Any]] = {}
         for name, model_value in profile_models.items():
-            assert isinstance(model_value, dict)
+            model = cast(dict[str, Any], model_value)
             api_key = api_keys[name]
             if not isinstance(api_key, str) or not api_key:
                 raise SolveProfileError(f"API key for model '{name}' must be a non-empty string")
             payload_models[name] = {
-                key: value for key, value in model_value.items() if key != "apiKeyEnv"
+                key: value for key, value in model.items() if key != "apiKeyEnv"
             }
             payload_models[name]["apiKey"] = api_key
         payload = {**validated_profile, "models": payload_models}
@@ -180,8 +180,6 @@ class InfuserClient(InfuserBaseClient):
         try:
             if self._contains_submitted_secret(data, secrets):
                 raise SolveProfileError("response contains submitted API-key material")
-            if set(data) != {"id", "expiresAt", "configuration"}:
-                raise ValueError
 
             expires_at = _nonempty_string(data["expiresAt"])
             parsed_expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
@@ -198,8 +196,7 @@ class InfuserClient(InfuserBaseClient):
             if configuration != expected_configuration:
                 raise ValueError
 
-            ttl_seconds = expected_configuration["ttlSeconds"]
-            assert isinstance(ttl_seconds, int)
+            ttl_seconds = cast(int, expected_configuration["ttlSeconds"])
             now = datetime.now(UTC)
             earliest_expiry = request_started + timedelta(seconds=ttl_seconds) - _CONTEXT_CLOCK_SKEW
             latest_expiry = response_received + timedelta(seconds=ttl_seconds) + _CONTEXT_CLOCK_SKEW
@@ -239,7 +236,9 @@ class InfuserClient(InfuserBaseClient):
             InfuserTransientError: For 5xx errors, timeouts, connection failures
             InfuserPermanentError: For 4xx errors
         """
-        async with handle_http_errors("Upload", include_response_body=False):
+        async with handle_http_errors(
+            "Upload", include_response_body=False, context_protected=True
+        ):
             with open(filepath, "rb") as f:
                 files = {
                     "file": (
@@ -257,8 +256,6 @@ class InfuserClient(InfuserBaseClient):
         try:
             data: object = response.json()
             if not isinstance(data, dict) or not {"id", "name", "sheets"} <= set(data):
-                raise ValueError
-            if set(data) - {"id", "name", "sheets", "revision"}:
                 raise ValueError
             workbook_id = _nonempty_string(data["id"])
             if str(UUID(workbook_id)) != workbook_id:
@@ -306,7 +303,7 @@ class InfuserClient(InfuserBaseClient):
         }
 
         response_body = bytearray()
-        async with handle_http_errors("Solve", include_response_body=False):
+        async with handle_http_errors("Solve", include_response_body=False, context_protected=True):
             async with self.client.stream(
                 "POST",
                 f"{self.base_url}/solve",
@@ -343,12 +340,9 @@ class InfuserClient(InfuserBaseClient):
                 "workbookId",
                 "choices",
                 "usage",
-                "output_xlsx_base64",
                 "transcript",
             }
             if not isinstance(data, dict) or not required <= set(data):
-                raise ValueError
-            if set(data) != required:
                 raise ValueError
 
             solve_id = _nonempty_string(data["id"])
@@ -363,16 +357,16 @@ class InfuserClient(InfuserBaseClient):
             if not isinstance(choices, list) or len(choices) != 1:
                 raise ValueError
             choice = choices[0]
-            if not isinstance(choice, dict) or set(choice) != {
+            if not isinstance(choice, dict) or not {
                 "index",
                 "message",
                 "finish_reason",
-            }:
+            } <= set(choice):
                 raise ValueError
             if _nonnegative_int(choice["index"]) != 0:
                 raise ValueError
             message = choice["message"]
-            if not isinstance(message, dict) or set(message) != {"role", "content"}:
+            if not isinstance(message, dict) or not {"role", "content"} <= set(message):
                 raise ValueError
             if message["role"] != "assistant" or not isinstance(message["content"], str):
                 raise ValueError
@@ -381,12 +375,7 @@ class InfuserClient(InfuserBaseClient):
 
             usage_data = data["usage"]
             required_usage = {"turns", "tool_calls", "input_tokens", "output_tokens"}
-            optional_usage = {"planning_turns", "planning_tool_calls"}
-            if (
-                not isinstance(usage_data, dict)
-                or not required_usage <= set(usage_data)
-                or set(usage_data) - required_usage - optional_usage
-            ):
+            if not isinstance(usage_data, dict) or not required_usage <= set(usage_data):
                 raise ValueError
             usage = InfuserUsage(
                 turns=_nonnegative_int(usage_data["turns"]),
@@ -399,16 +388,19 @@ class InfuserClient(InfuserBaseClient):
                 ),
             )
 
-            xlsx_b64 = _nonempty_string(data["output_xlsx_base64"])
-            if len(xlsx_b64) > MAX_WORKBOOK_BASE64_BYTES:
-                raise ValueError
-            output_xlsx = base64.b64decode(xlsx_b64, validate=True)
-            if (
-                not output_xlsx
-                or len(output_xlsx) > MAX_WORKBOOK_BYTES
-                or base64.b64encode(output_xlsx).decode() != xlsx_b64
-            ):
-                raise ValueError
+            output_xlsx = None
+            if "output_xlsx_base64" in data:
+                xlsx_b64 = _nonempty_string(data["output_xlsx_base64"])
+                normalized_xlsx_b64 = xlsx_b64.translate(str.maketrans("", "", " \t\r\n"))
+                if len(normalized_xlsx_b64) > MAX_WORKBOOK_BASE64_BYTES:
+                    raise ValueError
+                output_xlsx = base64.b64decode(normalized_xlsx_b64, validate=True)
+                if (
+                    not output_xlsx
+                    or len(output_xlsx) > MAX_WORKBOOK_BYTES
+                    or base64.b64encode(output_xlsx).decode() != normalized_xlsx_b64
+                ):
+                    raise ValueError
 
             transcript = data["transcript"]
             if not isinstance(transcript, dict):

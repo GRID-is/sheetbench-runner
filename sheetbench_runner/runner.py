@@ -19,7 +19,11 @@ from .dataset import Dataset
 from .entities import RunMetadata, Task, TaskResult, TaskStatus
 from .evaluator import Evaluator
 from .infuser import InfuserClient
-from .infuser_base import InfuserPermanentError, InfuserTransientError
+from .infuser_base import (
+    InfuserContextExpiredError,
+    InfuserPermanentError,
+    InfuserTransientError,
+)
 from .prompt import build_prompt
 from .run_directory import RunDirectory
 from .solve_profile import SolveProfileError, load_solve_profile
@@ -87,6 +91,7 @@ class TaskRunner:
         self._sensitive_values = [value for value in sensitive_values if value]
 
         self._stats = RunStats()
+        self._context_expired = asyncio.Event()
         self._progress: Progress | None = None
         self._progress_task: TaskID | None = None
         self._live: Live | None = None
@@ -268,6 +273,15 @@ class TaskRunner:
         Uses semaphore to limit concurrency.
         """
         async with self._semaphore:
+            if self._context_expired.is_set():
+                result = TaskResult(
+                    task_id=task.id,
+                    status=TaskStatus.FAILED,
+                    error="Solve context expired; retry on resume",
+                )
+                self._task_completed(task.id, passed=None)
+                return result
+
             self._stats.running_tasks.add(task.id)
             self._update_display()
             logger.debug(f"Starting task {task.id}")
@@ -349,6 +363,8 @@ class TaskRunner:
                 return result
 
             except InfuserTransientError as e:
+                if isinstance(e, InfuserContextExpiredError):
+                    self._context_expired.set()
                 duration = time.time() - start_time
                 logger.warning(f"Task {task.id} transient error after {duration:.1f}s: {e}")
                 result.status = TaskStatus.FAILED
@@ -441,7 +457,7 @@ async def run(
             completed=passed + failed,
             passed=passed,
             failed=failed,
-            skipped=len(tasks),
+            skipped=passed + failed,
         )
 
     if solve_profile_path is None:
