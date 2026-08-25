@@ -14,7 +14,7 @@ else:
 class Config:
     """Configuration for SheetBench Runner."""
 
-    infuser_url: str = "http://localhost:3000"
+    solve_server_url: str = "http://localhost:3000"
     solve_profile: Path | None = None
     concurrency: int = 4
     timeout_seconds: int = 3600  # 1 hour per task
@@ -32,7 +32,6 @@ class Config:
         with open(path, "rb") as f:
             data = tomllib.load(f)
 
-        infuser = data.get("infuser", {})
         runner = data.get("runner", {})
         solve = data.get("solve", {})
         profile_value = solve.get("profile")
@@ -40,7 +39,7 @@ class Config:
         if solve_profile is not None and not solve_profile.is_absolute():
             solve_profile = path.parent / solve_profile
         return cls(
-            infuser_url=infuser.get("url", cls.infuser_url),
+            solve_server_url=solve.get("url", cls.solve_server_url),
             solve_profile=solve_profile,
             concurrency=runner.get("concurrency", cls.concurrency),
             timeout_seconds=runner.get("timeout_seconds", cls.timeout_seconds),
@@ -48,14 +47,16 @@ class Config:
 
     def with_overrides(
         self,
-        infuser_url: str | None = None,
+        solve_server_url: str | None = None,
         solve_profile: Path | None = None,
         concurrency: int | None = None,
         timeout_seconds: int | None = None,
     ) -> "Config":
         """Create a new Config with CLI overrides applied."""
         return Config(
-            infuser_url=infuser_url if infuser_url is not None else self.infuser_url,
+            solve_server_url=solve_server_url
+            if solve_server_url is not None
+            else self.solve_server_url,
             solve_profile=solve_profile if solve_profile is not None else self.solve_profile,
             concurrency=concurrency if concurrency is not None else self.concurrency,
             timeout_seconds=(

@@ -5,6 +5,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from .solve_profile import validate_sanitized_configuration
+
 
 class TaskStatus(StrEnum):
     """Status of a task during execution."""
@@ -50,8 +52,8 @@ class Task:
 
 
 @dataclass(frozen=True)
-class InfuserUsage:
-    """Usage statistics from an infuser API response."""
+class SolveUsage:
+    """Usage statistics from a solve response."""
 
     turns: int
     tool_calls: int
@@ -61,7 +63,7 @@ class InfuserUsage:
     planning_tool_calls: int | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "InfuserUsage":
+    def from_dict(cls, data: dict[str, Any]) -> "SolveUsage":
         return cls(
             turns=data["turns"],
             tool_calls=data["tool_calls"],
@@ -125,41 +127,28 @@ class TaskResult:
         return d
 
 
+SCHEMA_VERSION = 2
+
+
 @dataclass(frozen=True)
 class RunMetadata:
-    """Metadata about a test run, stored in run.json."""
+    """Canonical run.json metadata."""
 
     model: str
     git_hash: str
-    infuser_config: dict[str, Any]
+    solve_configuration: dict[str, Any]
     test_set: int | None = None
     notes: str = ""
     created_at: datetime = field(default_factory=datetime.now)
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to run.json format."""
+        """Serialize the whitelisted canonical fields only."""
         return {
+            "schema_version": SCHEMA_VERSION,
             "model": self.model,
             "git_hash": self.git_hash,
-            "infuser_config": self.infuser_config,
+            "solve_configuration": validate_sanitized_configuration(self.solve_configuration),
             "test_set": self.test_set,
             "notes": self.notes,
             "created_at": self.created_at.isoformat(),
         }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "RunMetadata":
-        created_at = data.get("created_at")
-        if isinstance(created_at, str):
-            created_at = datetime.fromisoformat(created_at)
-        elif created_at is None:
-            created_at = datetime.now()
-
-        return cls(
-            model=data.get("model", "unknown"),
-            git_hash=data.get("git_hash", "unknown"),
-            infuser_config=data.get("infuser_config", {}),
-            test_set=data.get("test_set"),
-            notes=data.get("notes", ""),
-            created_at=created_at,
-        )

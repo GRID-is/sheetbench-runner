@@ -1,0 +1,13 @@
+{
+  "models": {
+    "default": {
+      "transport": "anthropic",
+      "model": "claude-sonnet-5",
+      "apiKeyEnv": "ANTHROPIC_API_KEY"
+    }
+  },
+  "modelRoles": {
+    "default": "default"
+  },
+  "ttlSeconds": 86400
+}

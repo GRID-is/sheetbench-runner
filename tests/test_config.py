@@ -13,15 +13,14 @@ def test_config_loads_solve_profile_without_secret_mapping(tmp_path: Path) -> No
     config_path.write_text(
         """
 [solve]
-profile = "profiles/solve.json"
-
-[infuser]
 url = "http://example.test"
+profile = "profiles/solve.json"
 """
     )
 
     config = Config.load(config_path)
 
+    assert config.solve_server_url == "http://example.test"
     assert config.solve_profile == tmp_path / "profiles/solve.json"
     assert not hasattr(config, "solve_secrets")
     assert not hasattr(config, "model")

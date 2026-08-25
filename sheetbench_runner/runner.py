@@ -18,14 +18,14 @@ from rich.text import Text
 from .dataset import Dataset
 from .entities import RunMetadata, Task, TaskResult, TaskStatus
 from .evaluator import Evaluator
-from .infuser import InfuserClient
-from .infuser_base import (
-    InfuserContextExpiredError,
-    InfuserPermanentError,
-    InfuserTransientError,
-)
 from .prompt import build_prompt
-from .run_directory import RunDirectory
+from .run_directory import LegacyRunMetadata, RunDirectory
+from .solve_client import (
+    NonRetryableSolveError,
+    RetryableSolveError,
+    SolveClient,
+    SolveContextExpiredError,
+)
 from .solve_profile import SolveProfileError, load_solve_profile
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ class TaskRunner:
 
     def __init__(
         self,
-        infuser: InfuserClient,
+        solve_client: SolveClient,
         evaluator: Evaluator,
         dataset: Dataset,
         run_dir: RunDirectory,
@@ -75,7 +75,7 @@ class TaskRunner:
         Initialize the task runner.
 
         Args:
-            infuser: Client for the infuser API
+            solve_client: Client for the solve server API
             evaluator: Evaluator for comparing outputs to golden files
             dataset: The SpreadsheetBench dataset
             run_dir: Run directory for results
@@ -83,7 +83,7 @@ class TaskRunner:
             sensitive_values: In-memory-only values forbidden from solve artifacts
 
         """
-        self._infuser = infuser
+        self._solve_client = solve_client
         self._evaluator = evaluator
         self._dataset = dataset
         self._run_dir = run_dir
@@ -296,21 +296,21 @@ class TaskRunner:
             try:
                 # Upload workbook
                 input_path = self._dataset.get_input_path(task)
-                workbook_id = await self._infuser.upload_workbook(input_path)
+                workbook_id = await self._solve_client.upload_workbook(input_path)
                 logger.info(f"Task {task.id} uploaded workbook as {workbook_id}")
 
                 # Build prompt with workbook_id
                 prompt = build_prompt(task, workbook_id)
 
                 # Call /solve
-                response = await self._infuser.solve(workbook_id, prompt)
+                response = await self._solve_client.solve(workbook_id, prompt)
 
                 logger.info(f"Task {task.id} solve completed")
 
                 if self._contains_sensitive_value(
                     response.transcript
                 ) or self._contains_sensitive_value(response.output_xlsx):
-                    raise InfuserPermanentError("Solve response contains sensitive material")
+                    raise NonRetryableSolveError("Solve response contains sensitive material")
 
                 # Write artifacts directly from response
                 output_file: str | None = None
@@ -362,8 +362,8 @@ class TaskRunner:
                 self._task_completed(task.id, passed=eval_result.passed)
                 return result
 
-            except InfuserTransientError as e:
-                if isinstance(e, InfuserContextExpiredError):
+            except RetryableSolveError as e:
+                if isinstance(e, SolveContextExpiredError):
                     self._context_expired.set()
                 duration = time.time() - start_time
                 logger.warning(f"Task {task.id} transient error after {duration:.1f}s: {e}")
@@ -378,7 +378,7 @@ class TaskRunner:
 async def run(
     dataset_path: Path,
     run_dir_path: Path,
-    infuser_url: str,
+    solve_server_url: str,
     solve_profile_path: Path | None,
     tasks: list[Task],
     concurrency: int = 4,
@@ -391,7 +391,7 @@ async def run(
     Args:
         dataset_path: Path to the SpreadsheetBench dataset
         run_dir_path: Path to the run directory
-        infuser_url: URL of the infuser API
+        solve_server_url: URL of the solve server API
         solve_profile_path: Path to a non-secret solve profile JSON file
 
         tasks: Tasks to run
@@ -464,49 +464,60 @@ async def run(
         raise SolveProfileError("A solve profile is required; pass --solve-profile PATH")
     solve_profile = load_solve_profile(solve_profile_path)
 
-    async with InfuserClient(infuser_url, timeout_seconds) as infuser:
+    existing_metadata = run_dir.read_metadata()
+    if isinstance(existing_metadata, RunMetadata):
+        if (
+            existing_metadata.solve_configuration != solve_profile.sanitized_configuration
+            or existing_metadata.model != solve_profile.default_model
+        ):
+            raise SolveProfileError(
+                "Resume configuration does not match the existing run metadata; "
+                "use the original solve profile or a new run directory"
+            )
+    elif isinstance(existing_metadata, LegacyRunMetadata):
+        if existing_metadata.model != solve_profile.default_model:
+            raise SolveProfileError(
+                "Released run metadata records a different model; resume with the solve "
+                "profile whose default model matches the recorded one"
+            )
+
+    api_keys = solve_profile.resolve_api_keys()
+
+    async with SolveClient(solve_server_url, timeout_seconds) as solve_client:
         context_created = False
         runner: TaskRunner | None = None
         try:
-            context = await infuser.create_solve_context(
-                solve_profile.configuration, solve_profile.api_keys
-            )
+            context = await solve_client.create_solve_context(solve_profile.configuration, api_keys)
             context_created = True
 
-            existing_metadata = run_dir.load_metadata()
-            if existing_metadata is not None and (
-                existing_metadata.infuser_config != context.configuration
-                or existing_metadata.model != solve_profile.default_model
-            ):
-                raise SolveProfileError(
-                    "Resume configuration does not match the existing run metadata; "
-                    "use the original solve profile or a new run directory"
-                )
-
-            if not run_dir.run_json_path.exists():
+            if isinstance(existing_metadata, LegacyRunMetadata):
+                logger.info(f"Migrating released run metadata at {run_dir_path}")
+                run_dir.migrate_released_metadata(existing_metadata, context.configuration)
+            elif existing_metadata is None:
                 logger.info(f"Creating run metadata at {run_dir_path}")
                 status: dict[str, object] = {}
                 try:
-                    status = await infuser.get_status()
+                    status = await solve_client.get_status()
                 except Exception as e:
-                    logger.warning(f"Could not get infuser status: {e}")
+                    logger.warning(f"Could not get solve server status: {e}")
                 git_hash_val = status.get("version", "unknown")
                 git_hash = str(git_hash_val) if git_hash_val else "unknown"
-                metadata = RunMetadata(
-                    model=solve_profile.default_model,
-                    git_hash=git_hash,
-                    infuser_config=context.configuration,
-                    notes=run_dir_path.name,
+                run_dir.create(
+                    RunMetadata(
+                        model=solve_profile.default_model,
+                        git_hash=git_hash,
+                        solve_configuration=context.configuration,
+                        notes=run_dir_path.name,
+                    )
                 )
-                run_dir.create(metadata)
 
             runner = TaskRunner(
-                infuser=infuser,
+                solve_client=solve_client,
                 evaluator=evaluator,
                 dataset=dataset,
                 run_dir=run_dir,
                 concurrency=concurrency,
-                sensitive_values=(*solve_profile.api_keys.values(), context.id),
+                sensitive_values=(*api_keys.values(), context.id),
             )
             return await runner.run_all(tasks)
         finally:
@@ -514,7 +525,7 @@ async def run(
                 if context_created:
                     primary_error = sys.exception()
                     try:
-                        await infuser.delete_solve_context()
+                        await solve_client.delete_solve_context()
                     except Exception as e:
                         if primary_error is None:
                             raise
@@ -522,4 +533,4 @@ async def run(
             finally:
                 if runner is not None:
                     runner.clear_sensitive_values()
-                solve_profile.api_keys.clear()
+                api_keys.clear()

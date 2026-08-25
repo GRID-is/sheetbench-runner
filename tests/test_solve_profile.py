@@ -58,7 +58,7 @@ def test_resolves_two_arbitrary_environment_names(
     loaded = load_solve_profile(write_profile(tmp_path / "profile.json"))
 
     assert loaded.configuration == PROFILE
-    assert loaded.api_keys == {
+    assert loaded.resolve_api_keys() == {
         "primary": "first-secret",
         "reviewer": "second-secret",
     }
@@ -94,7 +94,7 @@ def test_shared_environment_name_repeats_key_for_each_model(
 
     loaded = load_solve_profile(write_profile(tmp_path / "profile.json", profile))
 
-    assert loaded.api_keys == {"primary": "shared-secret", "reviewer": "shared-secret"}
+    assert loaded.resolve_api_keys() == {"primary": "shared-secret", "reviewer": "shared-secret"}
     assert "shared-secret" not in repr(loaded)
 
 
@@ -105,7 +105,7 @@ def test_absent_environment_variable_never_exposes_another_value(
     monkeypatch.delenv("SECOND_KEY", raising=False)
 
     with pytest.raises(SolveProfileError) as exc_info:
-        load_solve_profile(write_profile(tmp_path / "profile.json"))
+        load_solve_profile(write_profile(tmp_path / "profile.json")).resolve_api_keys()
 
     message = str(exc_info.value)
     assert "SECOND_KEY" in message
@@ -120,7 +120,7 @@ def test_blank_environment_value_is_rejected_without_exposing_other_values(
     monkeypatch.setenv("SECOND_KEY", "second-secret")
 
     with pytest.raises(SolveProfileError, match="FIRST_KEY") as exc_info:
-        load_solve_profile(write_profile(tmp_path / "profile.json"))
+        load_solve_profile(write_profile(tmp_path / "profile.json")).resolve_api_keys()
 
     assert "second-secret" not in str(exc_info.value)
 
@@ -132,7 +132,7 @@ def test_api_key_utf8_byte_limit_is_enforced(
     monkeypatch.setenv("SECOND_KEY", "safe")
 
     with pytest.raises(SolveProfileError, match="4096 UTF-8 bytes") as exc_info:
-        load_solve_profile(write_profile(tmp_path / "profile.json"))
+        load_solve_profile(write_profile(tmp_path / "profile.json")).resolve_api_keys()
 
     assert "é" not in str(exc_info.value)
 
@@ -146,7 +146,7 @@ def test_repeated_per_model_keys_count_toward_aggregate_limit(
     monkeypatch.setenv("SHARED_API_KEY", "k" * 4096)
 
     with pytest.raises(SolveProfileError, match="65536 aggregate UTF-8 bytes"):
-        load_solve_profile(write_profile(tmp_path / "profile.json", profile))
+        load_solve_profile(write_profile(tmp_path / "profile.json", profile)).resolve_api_keys()
 
 
 def test_api_key_byte_caps_are_inclusive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -157,7 +157,7 @@ def test_api_key_byte_caps_are_inclusive(tmp_path: Path, monkeypatch: pytest.Mon
 
     loaded = load_solve_profile(write_profile(tmp_path / "profile.json", profile))
 
-    assert len(loaded.api_keys) == 16
+    assert len(loaded.resolve_api_keys()) == 16
 
 
 @pytest.mark.parametrize(
@@ -375,3 +375,56 @@ def test_rejects_invalid_model_roles(
 
     with pytest.raises(SolveProfileError, match="modelRoles"):
         load_solve_profile(write_profile(tmp_path / "profile.json", profile))
+
+
+def test_loading_a_profile_does_not_resolve_api_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange
+    monkeypatch.delenv("FIRST_KEY", raising=False)
+    monkeypatch.delenv("SECOND_KEY", raising=False)
+    expected_sanitized = {
+        "models": {
+            "primary": {"transport": "anthropic", "model": "model-v9"},
+            "reviewer": {"transport": "openai-responses", "model": "review-model"},
+        },
+        "modelRoles": {"default": "primary", "review": "reviewer"},
+        "ttlSeconds": 900,
+    }
+
+    # Act
+    profile = load_solve_profile(write_profile(tmp_path / "profile.json"))
+
+    # Assert
+    assert profile.default_model == "model-v9"
+    assert profile.sanitized_configuration == expected_sanitized
+
+
+@pytest.mark.parametrize(
+    ("filename", "transport", "model", "api_key_env"),
+    [
+        ("anthropic-profile.json", "anthropic", "claude-sonnet-5", "ANTHROPIC_API_KEY"),
+        ("openai-profile.json", "openai-responses", "gpt-5.2", "OPENAI_API_KEY"),
+    ],
+)
+def test_standard_profile_is_valid_and_non_secret(
+    filename: str, transport: str, model: str, api_key_env: str
+) -> None:
+    # Arrange
+    path = Path(__file__).parent.parent / "profiles" / filename
+    expected_configuration = {
+        "models": {"default": {"transport": transport, "model": model, "apiKeyEnv": api_key_env}},
+        "modelRoles": {"default": "default"},
+        "ttlSeconds": 86400,
+    }
+
+    # Act
+    profile = load_solve_profile(path)
+
+    # Assert
+    assert profile.configuration == expected_configuration
+    assert profile.default_model == model
+    assert profile.sanitized_configuration["models"]["default"] == {
+        "transport": transport,
+        "model": model,
+    }

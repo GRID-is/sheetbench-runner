@@ -1,21 +1,19 @@
-"""HTTP client for the infuser /solve API with workbook upload/download."""
+"""HTTP client for the solve server API with workbook upload/download."""
 
 import base64
 import binascii
 import json
 import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any, AsyncIterator, Mapping, Self, cast
 from uuid import UUID
 
-from .entities import InfuserUsage
-from .infuser_base import (
-    InfuserBaseClient,
-    InfuserPermanentError,
-    handle_http_errors,
-)
+import httpx
+
+from .entities import SolveUsage
 from .solve_profile import (
     SolveProfileError,
     sanitized_configuration,
@@ -24,6 +22,58 @@ from .solve_profile import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class SolveError(Exception):
+    """Base exception for solve server API errors."""
+
+
+class RetryableSolveError(SolveError):
+    """
+    Transient error that should trigger a retry on resume.
+
+    This includes 5xx errors, timeouts, and connection failures.
+    """
+
+
+class NonRetryableSolveError(SolveError):
+    """
+    Permanent error that should not be retried.
+
+    This includes 4xx errors (bad request, validation errors).
+    """
+
+
+class SolveContextExpiredError(RetryableSolveError):
+    """The ephemeral solve context is no longer accepted by the server."""
+
+
+# Limit error message length for readability
+_ERROR_TEXT_MAX_LENGTH = 200
+
+
+@asynccontextmanager
+async def handle_http_errors(
+    operation: str,
+    *,
+    include_response_body: bool = True,
+    context_protected: bool = False,
+) -> AsyncIterator[None]:
+    """Handle HTTP errors consistently across all operations."""
+    try:
+        yield
+    except httpx.HTTPStatusError as e:
+        detail = f": {e.response.text[:_ERROR_TEXT_MAX_LENGTH]}" if include_response_body else ""
+        if context_protected and e.response.status_code == 401:
+            raise SolveContextExpiredError(
+                f"{operation} failed because solve context expired"
+            ) from e
+        if e.response.status_code >= 500:
+            raise RetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
+        raise NonRetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        raise RetryableSolveError(f"Connection error: {e}") from e
+
 
 # The solve server accepts workbook uploads up to 16 MiB. These larger response
 # limits permit XLSX expansion while preventing unbounded response buffering.
@@ -80,27 +130,76 @@ class SolveResponse:
 
     id: str
     model: str
-    usage: InfuserUsage
+    usage: SolveUsage
     workbook_id: str
     output_xlsx: bytes | None = None
     transcript: dict[str, Any] | None = None
 
 
-class InfuserClient(InfuserBaseClient):
+class SolveClient:
     """
     Client for the /solve endpoint with workbook upload flow.
 
     Usage:
-        async with InfuserClient("http://localhost:3000") as client:
+        async with SolveClient("http://localhost:3000") as client:
             workbook_id = await client.upload_workbook(input_path)
             response = await client.solve(workbook_id, prompt)
             # response.output_xlsx contains the solved workbook bytes
             # response.transcript contains the inline transcript
     """
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        base_url: str,
+        timeout_seconds: int = 3600,
+        client: httpx.AsyncClient | None = None,
+    ):
+        """
+        Initialize the client.
+
+        Args:
+            base_url: Base URL of the API (e.g., "http://localhost:3000")
+            timeout_seconds: Timeout for requests (default: 1 hour)
+            client: Optional httpx client for testing
+        """
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+        self._client = client
+        self._owns_client = client is None
         self._solve_context_id: str | None = None
+
+    async def __aenter__(self) -> Self:
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.timeout_seconds, connect=30.0),
+            )
+        return self
+
+    async def __aexit__(
+        self, exc_type: type | None, exc_val: Exception | None, exc_tb: object
+    ) -> None:
+        if self._owns_client and self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    @property
+    def client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            raise RuntimeError("Client not initialized. Use 'async with' context manager.")
+        return self._client
+
+    async def get_status(self) -> dict[str, object]:
+        """
+        Get server status including model and version info.
+
+        Returns:
+            Dict with 'default_model', 'version', etc.
+        """
+        async with handle_http_errors("Status"):
+            response = await self.client.get(f"{self.base_url}/status")
+            response.raise_for_status()
+            result: dict[str, object] = response.json()
+            return result
 
     def _context_headers(self) -> dict[str, str]:
         if self._solve_context_id is None:
@@ -113,12 +212,12 @@ class InfuserClient(InfuserBaseClient):
             return any(secret in value for secret in secrets)
         if isinstance(value, dict):
             return any(
-                InfuserClient._contains_submitted_secret(key, secrets)
-                or InfuserClient._contains_submitted_secret(child, secrets)
+                SolveClient._contains_submitted_secret(key, secrets)
+                or SolveClient._contains_submitted_secret(child, secrets)
                 for key, child in value.items()
             )
         if isinstance(value, list):
-            return any(InfuserClient._contains_submitted_secret(child, secrets) for child in value)
+            return any(SolveClient._contains_submitted_secret(child, secrets) for child in value)
         return False
 
     async def _delete_solve_context_id(self, context_id: str) -> None:
@@ -165,16 +264,16 @@ class InfuserClient(InfuserBaseClient):
                 response.raise_for_status()
             data: object = response.json()
         except (ValueError, TypeError) as e:
-            raise InfuserPermanentError("Invalid solve context response") from e
+            raise NonRetryableSolveError("Invalid solve context response") from e
         response_received = datetime.now(UTC)
 
         if not isinstance(data, Mapping):
-            raise InfuserPermanentError("Invalid solve context response")
+            raise NonRetryableSolveError("Invalid solve context response")
         secrets = tuple(secret for secret in api_keys.values() if secret)
         try:
             context_id = _valid_context_token(data["id"])
         except (KeyError, TypeError, ValueError) as e:
-            raise InfuserPermanentError("Invalid solve context response") from e
+            raise NonRetryableSolveError("Invalid solve context response") from e
 
         self._solve_context_id = context_id
         try:
@@ -204,7 +303,7 @@ class InfuserClient(InfuserBaseClient):
                 raise ValueError
 
         except (KeyError, TypeError, ValueError, SolveProfileError) as e:
-            primary_error = InfuserPermanentError("Invalid solve context response")
+            primary_error = NonRetryableSolveError("Invalid solve context response")
             try:
                 await self._delete_solve_context_id(context_id)
             except Exception:
@@ -233,8 +332,8 @@ class InfuserClient(InfuserBaseClient):
             The workbook ID assigned by the server
 
         Raises:
-            InfuserTransientError: For 5xx errors, timeouts, connection failures
-            InfuserPermanentError: For 4xx errors
+            RetryableSolveError: For 5xx errors, timeouts, connection failures
+            NonRetryableSolveError: For 4xx errors
         """
         async with handle_http_errors(
             "Upload", include_response_body=False, context_protected=True
@@ -276,7 +375,7 @@ class InfuserClient(InfuserBaseClient):
                     raise ValueError
             return workbook_id
         except (KeyError, TypeError, ValueError) as e:
-            raise InfuserPermanentError("Invalid upload response") from e
+            raise NonRetryableSolveError("Invalid upload response") from e
 
     async def solve(
         self,
@@ -294,8 +393,8 @@ class InfuserClient(InfuserBaseClient):
             SolveResponse with inline transcript and workbook bytes
 
         Raises:
-            InfuserTransientError: For 5xx errors, timeouts, connection failures
-            InfuserPermanentError: For 4xx errors
+            RetryableSolveError: For 5xx errors, timeouts, connection failures
+            NonRetryableSolveError: For 4xx errors
         """
         payload: dict[str, object] = {
             "workbookId": workbook_id,
@@ -315,20 +414,20 @@ class InfuserClient(InfuserBaseClient):
                 if content_length is not None:
                     try:
                         if int(content_length) > MAX_SOLVE_RESPONSE_BYTES:
-                            raise InfuserPermanentError("Invalid solve response")
+                            raise NonRetryableSolveError("Invalid solve response")
                     except ValueError:
                         pass
                 async for chunk in response.aiter_bytes():
                     if len(response_body) + len(chunk) > MAX_SOLVE_RESPONSE_BYTES:
-                        raise InfuserPermanentError("Invalid solve response")
+                        raise NonRetryableSolveError("Invalid solve response")
                     response_body.extend(chunk)
         try:
             data: object = json.loads(response_body)
             return self._parse_solve_response(data, workbook_id)
-        except InfuserPermanentError:
+        except NonRetryableSolveError:
             raise
         except (TypeError, ValueError) as e:
-            raise InfuserPermanentError("Invalid solve response") from e
+            raise NonRetryableSolveError("Invalid solve response") from e
 
     def _parse_solve_response(self, data: object, workbook_id: str) -> SolveResponse:
         """Validate the server contract without including attacker-controlled values in errors."""
@@ -377,7 +476,7 @@ class InfuserClient(InfuserBaseClient):
             required_usage = {"turns", "tool_calls", "input_tokens", "output_tokens"}
             if not isinstance(usage_data, dict) or not required_usage <= set(usage_data):
                 raise ValueError
-            usage = InfuserUsage(
+            usage = SolveUsage(
                 turns=_nonnegative_int(usage_data["turns"]),
                 tool_calls=_nonnegative_int(usage_data["tool_calls"]),
                 input_tokens=_nonnegative_int(usage_data["input_tokens"]),
@@ -415,7 +514,7 @@ class InfuserClient(InfuserBaseClient):
                 transcript=transcript,
             )
         except (KeyError, TypeError, ValueError, binascii.Error) as e:
-            raise InfuserPermanentError("Invalid solve response") from e
+            raise NonRetryableSolveError("Invalid solve response") from e
 
     async def download_workbook(self, workbook_id: str) -> bytes:
         """
@@ -428,8 +527,8 @@ class InfuserClient(InfuserBaseClient):
             The xlsx file bytes
 
         Raises:
-            InfuserTransientError: For 5xx errors, timeouts, connection failures
-            InfuserPermanentError: For 4xx errors (including 404)
+            RetryableSolveError: For 5xx errors, timeouts, connection failures
+            NonRetryableSolveError: For 4xx errors (including 404)
         """
         async with handle_http_errors("Download"):
             response = await self.client.get(f"{self.base_url}/workbooks/{workbook_id}/download")

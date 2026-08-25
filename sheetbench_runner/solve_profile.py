@@ -3,7 +3,7 @@
 import json
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -24,12 +24,39 @@ class SolveProfileError(ValueError):
 
 
 @dataclass(frozen=True)
-class LoadedSolveProfile:
-    """Validated configuration plus process-memory-only per-model API keys."""
+class SolveProfile:
+    """A validated non-secret profile that resolves API keys on demand."""
 
     configuration: dict[str, Any]
-    api_keys: dict[str, str] = field(repr=False)
+    sanitized_configuration: dict[str, Any]
     default_model: str
+
+    def resolve_api_keys(self) -> dict[str, str]:
+        """Read each model's API key from its environment variable into process memory."""
+        models = _require_object(self.configuration["models"], "models")
+        api_keys: dict[str, str] = {}
+        aggregate_bytes = 0
+        for name, model_value in models.items():
+            model = _require_object(model_value, f"models.{name}")
+            environment_name = cast(str, model["apiKeyEnv"])
+            value = os.environ.get(environment_name)
+            if not value or not value.strip():
+                raise SolveProfileError(
+                    f"Environment variable '{environment_name}' is not set or empty"
+                )
+            value_bytes = len(value.encode("utf-8"))
+            if value_bytes > MAX_API_KEY_BYTES:
+                raise SolveProfileError(
+                    f"API key from environment variable '{environment_name}' exceeds "
+                    f"{MAX_API_KEY_BYTES} UTF-8 bytes"
+                )
+            aggregate_bytes += value_bytes
+            if aggregate_bytes > MAX_AGGREGATE_API_KEY_BYTES:
+                raise SolveProfileError(
+                    f"Per-model API keys exceed {MAX_AGGREGATE_API_KEY_BYTES} aggregate UTF-8 bytes"
+                )
+            api_keys[name] = value
+        return api_keys
 
 
 def _require_object(value: object, field: str) -> dict[str, Any]:
@@ -207,8 +234,8 @@ def sanitized_configuration(profile: object) -> dict[str, Any]:
     return {**validated, "models": sanitized_models}
 
 
-def load_solve_profile(path: Path) -> LoadedSolveProfile:
-    """Load profile JSON and resolve each model's API-key environment variable."""
+def load_solve_profile(path: Path) -> SolveProfile:
+    """Load and validate profile JSON without reading any API-key environment variable."""
     try:
         raw: object = json.loads(path.read_text())
     except FileNotFoundError as e:
@@ -223,30 +250,7 @@ def load_solve_profile(path: Path) -> LoadedSolveProfile:
     }
     models = _require_object(profile["models"], "models")
     model_roles = _require_object(profile["modelRoles"], "modelRoles")
-    api_keys: dict[str, str] = {}
-    aggregate_bytes = 0
-    for name, model_value in models.items():
-        model = _require_object(model_value, f"models.{name}")
-        environment_name = cast(str, model["apiKeyEnv"])
-        value = os.environ.get(environment_name)
-        if not value or not value.strip():
-            raise SolveProfileError(
-                f"Environment variable '{environment_name}' is not set or empty"
-            )
-        value_bytes = len(value.encode("utf-8"))
-        if value_bytes > MAX_API_KEY_BYTES:
-            raise SolveProfileError(
-                f"API key from environment variable '{environment_name}' exceeds "
-                f"{MAX_API_KEY_BYTES} UTF-8 bytes"
-            )
-        aggregate_bytes += value_bytes
-        if aggregate_bytes > MAX_AGGREGATE_API_KEY_BYTES:
-            raise SolveProfileError(
-                f"Per-model API keys exceed {MAX_AGGREGATE_API_KEY_BYTES} aggregate UTF-8 bytes"
-            )
-        api_keys[name] = value
-
     default_name = cast(str, model_roles["default"])
     default = _require_object(models[default_name], f"models.{default_name}")
     default_model = cast(str, default["model"])
-    return LoadedSolveProfile(dict(profile), api_keys, default_model)
+    return SolveProfile(profile, sanitized_configuration(profile), default_model)

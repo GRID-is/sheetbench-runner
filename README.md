@@ -35,7 +35,7 @@ Point the runner at a SpreadsheetBench dataset directory and an output directory
 sheetbench-runner \
   --dataset data/spreadsheetbench_verified_400/ \
   --run-dir data/runs/2026-02-05-my-run \
-  --solve-profile solve-profile.json \
+  --solve-profile profiles/anthropic-profile.json \
   --concurrency 10
 ```
 
@@ -46,11 +46,15 @@ sheetbench-runner \
   --dataset data/spreadsheetbench_verified_400/ \
   --run-dir data/runs/2026-02-05-my-run \
   --task-file task-sets/all_verified_tasks.txt \
-  --solve-profile solve-profile.json \
+  --solve-profile profiles/anthropic-profile.json \
   --concurrency 10
 ```
 
-Runs are **resumable** — if interrupted, re-running the same command skips already-completed tasks and retries any that failed due to transient errors (5xx, timeouts).
+Runs are **resumable** — if interrupted, re-running the same command skips
+already-completed tasks and retries any that failed due to transient errors
+(5xx, timeouts). Resume with the same solve profile: the runner compares the
+profile's sanitized configuration and default model with the run metadata
+before it contacts the server.
 
 ### Re-evaluation
 
@@ -68,22 +72,24 @@ sheetbench-runner \
 ```
 Usage: sheetbench-runner [OPTIONS]
 
+  Parallel inference runner for SpreadsheetBench with inline evaluation.
+
 Options:
-  --dataset PATH         Path to SpreadsheetBench dataset directory
-                         (containing dataset.json)  [required]
-  --run-dir PATH         Directory to store results (creates if missing,
-                         resumes if exists)  [required]
-  --task-ids TEXT        Comma-separated list of specific task IDs to run
-  --task-file PATH       File with task IDs to run (one per line)
-  --config PATH          Path to config.toml file
-  --infuser-url TEXT     Override infuser URL from config
-  --solve-profile PATH   Non-secret solve profile JSON file
-  --concurrency INTEGER  Number of parallel tasks (default: 4)
-  --timeout INTEGER      Timeout per task in seconds (default: 3600)
-  -v, --verbose          Enable verbose logging
-  --reevaluate           Re-evaluate all tasks that have output files (useful
-                         after parser fixes)
-  --help                 Show this message and exit.
+  --dataset PATH           Path to SpreadsheetBench dataset directory
+                           (containing dataset.json)  [required]
+  --run-dir PATH           Directory to store results (creates if missing,
+                           resumes if exists)  [required]
+  --task-ids TEXT          Comma-separated list of specific task IDs to run
+  --task-file PATH         File with task IDs to run (one per line)
+  --config PATH            Path to config.toml file
+  --solve-server-url TEXT  Override solve server URL from config
+  --solve-profile FILE     Non-secret solve profile JSON file
+  --concurrency INTEGER    Number of parallel tasks (default: 4)
+  --timeout INTEGER        Timeout per task in seconds (default: 3600)
+  -v, --verbose            Enable verbose logging
+  --reevaluate             Re-evaluate all tasks that have output files
+                           (useful after parser fixes)
+  --help                   Show this message and exit.
 ```
 
 ## Configuration
@@ -91,18 +97,16 @@ Options:
 Copy `config.example.toml` to `config.toml` and adjust as needed:
 
 ```toml
-[infuser]
-url = "http://localhost:3000"
-
 [solve]
-profile = "solve-profile.json"
+url = "http://localhost:3000"
+profile = "profiles/anthropic-profile.json"
 
 [runner]
 concurrency = 4
 timeout_seconds = 3600
 ```
 
-CLI options (`--infuser-url`, `--solve-profile`, `--concurrency`, `--timeout`)
+CLI options (`--solve-server-url`, `--solve-profile`, `--concurrency`, `--timeout`)
 override their config file equivalents.
 
 The solve profile is JSON containing `models`, `modelRoles`, and optional
@@ -110,9 +114,16 @@ The solve profile is JSON containing `models`, `modelRoles`, and optional
 fields. Each model's required `apiKeyEnv` directly names the environment variable
 containing its API key and must match the portable syntax
 `[A-Za-z_][A-Za-z0-9_]*` (maximum 64 characters). Models may share an environment
-variable or name different variables. The runner resolves each key before HTTP and
-submits it inline as that model's `apiKey`; no top-level credentials object is sent.
-See `solve-profile.example.json` for the shape.
+variable or name different variables. The runner resolves each key after the
+non-secret checks pass and submits it inline as that model's `apiKey`; no
+top-level credentials object is sent.
+
+Two standard profiles are checked in:
+
+| Profile | Transport | Model | Environment variable |
+| --- | --- | --- | --- |
+| `profiles/anthropic-profile.json` | `anthropic` | `claude-sonnet-5` | `ANTHROPIC_API_KEY` |
+| `profiles/openai-profile.json` | `openai-responses` | `gpt-5.2` | `OPENAI_API_KEY` |
 
 When omitted, `ttlSeconds` defaults to 86,400 seconds, the server maximum, so a
 full benchmark run can share one context. A shorter explicit value must cover the
@@ -124,7 +135,25 @@ deletes it on exit. API key values and the context ID remain in process memory
 and are never written to run artifacts. Run metadata stores only the server's
 sanitized configuration (`transport`, `model`, and optional `options` per model),
 so neither `apiKey` nor `apiKeyEnv` is persisted. A pure `--reevaluate` run makes
-no server requests and does not require a solve profile.
+no server requests, does not require a solve profile, and never rewrites
+`run.json`.
+
+### Released legacy runs
+
+Released `sheetbench-runner` master wrote `run.json` with a top-level `model`
+and an `infuser_config` object. To continue such a run, supply a solve profile.
+Supplying the profile is the adoption mechanism; there is no separate flag.
+The runner compares only the recorded top-level `model` with the profile's
+default model. It does not read or compare the historical transport: the
+selected profile defines the current transport and is validated exactly like a
+new run. If the recorded model differs or is absent, the run fails before any
+context is created. After the new context is created and validated, the runner
+rewrites `run.json` to schema version 2 in one atomic replace.
+
+Canonical `run.json` has an explicit `schema_version` of 2 and the keys `model`,
+`git_hash`, `solve_configuration`, `test_set`, `notes`, and `created_at`. A
+`run.json` that holds both `infuser_config` and `solve_configuration`, or that
+holds malformed canonical metadata, fails the run before any server request.
 
 ## Output
 
@@ -132,7 +161,7 @@ A run directory contains:
 
 ```
 run-dir/
-├── run.json                  # Run metadata (model, config, timestamp)
+├── run.json                  # Run metadata (schema 2: model, solve_configuration, ...)
 ├── results.json              # Task results sorted by task_id
 ├── run.log                   # Execution log
 ├── 13-1-output.xlsx          # Output workbook for task 13-1

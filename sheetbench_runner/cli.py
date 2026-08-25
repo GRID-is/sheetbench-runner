@@ -66,10 +66,10 @@ def load_task_ids_from_file(file_path: Path) -> set[str]:
     help="Path to config.toml file",
 )
 @click.option(
-    "--infuser-url",
+    "--solve-server-url",
     type=str,
     default=None,
-    help="Override infuser URL from config",
+    help="Override solve server URL from config",
 )
 @click.option(
     "--solve-profile",
@@ -106,7 +106,7 @@ async def cli(
     task_ids: str | None,
     task_file: Path | None,
     config: Path | None,
-    infuser_url: str | None,
+    solve_server_url: str | None,
     solve_profile: Path | None,
     concurrency: int | None,
     timeout: int | None,
@@ -123,7 +123,7 @@ async def cli(
     # Load config
     cfg = Config.load(config)
     cfg = cfg.with_overrides(
-        infuser_url=infuser_url,
+        solve_server_url=solve_server_url,
         solve_profile=solve_profile.resolve() if solve_profile else None,
         concurrency=concurrency,
         timeout_seconds=timeout,
@@ -152,7 +152,7 @@ async def cli(
     stats = await run(
         dataset_path=dataset,
         run_dir_path=run_dir,
-        infuser_url=cfg.infuser_url,
+        solve_server_url=cfg.solve_server_url,
         solve_profile_path=cfg.solve_profile,
         tasks=tasks,
         concurrency=cfg.concurrency,

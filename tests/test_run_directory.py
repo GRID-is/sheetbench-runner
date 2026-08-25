@@ -1,10 +1,38 @@
 """Tests for run directory management."""
 
 import json
+from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from sheetbench_runner.entities import RunMetadata, TaskResult, TaskStatus
-from sheetbench_runner.run_directory import RunDirectory
+from sheetbench_runner.run_directory import (
+    LEGACY_SOLVE_CONFIGURATION_KEY,
+    LegacyRunMetadata,
+    RunDirectory,
+    RunMetadataError,
+)
+from sheetbench_runner.solve_profile import SolveProfileError
+
+SOLVE_CONFIGURATION: dict[str, Any] = {
+    "models": {"default": {"transport": "anthropic", "model": "claude-sonnet-5"}},
+    "modelRoles": {"default": "default"},
+    "ttlSeconds": 86400,
+}
+RELEASED_RUN_JSON: dict[str, Any] = {
+    "model": "claude-sonnet-4-5",
+    "git_hash": "released-sha",
+    LEGACY_SOLVE_CONFIGURATION_KEY: {
+        "default_model": "claude-sonnet-4-5",
+        "version": "released-sha",
+        "status": "healthy",
+    },
+    "test_set": 1,
+    "notes": "released run",
+    "created_at": "2026-01-02T03:04:05",
+}
 
 
 def test_create_new_run_directory(temp_dir: Path):
@@ -13,9 +41,9 @@ def test_create_new_run_directory(temp_dir: Path):
     run_path = temp_dir / "new-run"
     run_dir = RunDirectory(run_path)
     metadata = RunMetadata(
-        model="claude-sonnet-4-5",
+        model="claude-sonnet-5",
         git_hash="abc123",
-        infuser_config={"planning_enabled": False, "verification_enabled": True},
+        solve_configuration=SOLVE_CONFIGURATION,
         test_set=1,
         notes="Test run",
     )
@@ -30,12 +58,15 @@ def test_create_new_run_directory(temp_dir: Path):
 
     with open(run_path / "run.json") as f:
         run_data = json.load(f)
-    # model and git_hash at root level for compatibility
-    assert run_data["model"] == "claude-sonnet-4-5"
-    assert run_data["git_hash"] == "abc123"
-    # full infuser config preserved
-    assert run_data["infuser_config"]["planning_enabled"] is False
-    assert run_data["infuser_config"]["verification_enabled"] is True
+    assert run_data == {
+        "schema_version": 2,
+        "model": "claude-sonnet-5",
+        "git_hash": "abc123",
+        "solve_configuration": SOLVE_CONFIGURATION,
+        "test_set": 1,
+        "notes": "Test run",
+        "created_at": metadata.created_at.isoformat(),
+    }
 
 
 def test_load_existing_results(temp_dir: Path):
@@ -227,7 +258,9 @@ def test_create_preserves_existing_results(temp_dir: Path):
         json.dump(existing_results, f)
 
     run_dir = RunDirectory(run_path)
-    metadata = RunMetadata(model="test-model", git_hash="test123", infuser_config={})
+    metadata = RunMetadata(
+        model="test-model", git_hash="test123", solve_configuration=SOLVE_CONFIGURATION
+    )
 
     # Act - create run.json (results.json already exists)
     run_dir.create(metadata)
@@ -238,3 +271,249 @@ def test_create_preserves_existing_results(temp_dir: Path):
     assert len(results) == 2
     assert results[0]["task_id"] == "13-1"
     assert results[1]["task_id"] == "17-35"
+
+
+@pytest.mark.parametrize(
+    "unsafe_configuration",
+    [
+        {
+            "models": {"default": {"transport": "anthropic", "model": "m", "apiKeyEnv": "K"}},
+            "modelRoles": {"default": "default"},
+        },
+        {
+            "models": {"default": {"transport": "anthropic", "model": "m", "apiKey": "secret"}},
+            "modelRoles": {"default": "default"},
+        },
+        {**SOLVE_CONFIGURATION, "credentials": {"K": "secret"}},
+    ],
+    ids=["apiKeyEnv", "apiKey", "credentials"],
+)
+def test_metadata_cannot_serialize_api_key_material(
+    temp_dir: Path, unsafe_configuration: dict[str, Any]
+) -> None:
+    # Arrange
+    run_dir = RunDirectory(temp_dir / "unsafe-run")
+    metadata = RunMetadata(model="m", git_hash="h", solve_configuration=unsafe_configuration)
+
+    # Act / Assert
+    with pytest.raises(SolveProfileError):
+        run_dir.create(metadata)
+    assert not (temp_dir / "unsafe-run" / "run.json").exists()
+
+
+def test_read_metadata_returns_none_without_run_json(temp_dir: Path) -> None:
+    # Arrange
+    run_path = temp_dir / "empty-run"
+    run_path.mkdir()
+
+    # Act / Assert
+    assert RunDirectory(run_path).read_metadata() is None
+
+
+def test_read_metadata_decodes_canonical_document(temp_dir: Path) -> None:
+    # Arrange
+    run_path = temp_dir / "canonical-run"
+    run_dir = RunDirectory(run_path)
+    metadata = RunMetadata(
+        model="claude-sonnet-5",
+        git_hash="abc123",
+        solve_configuration=SOLVE_CONFIGURATION,
+        test_set=2,
+        notes="canonical",
+    )
+    run_dir.create(metadata)
+
+    # Act
+    actual = run_dir.read_metadata()
+
+    # Assert
+    assert actual == metadata
+
+
+def test_read_metadata_decodes_released_legacy_document(temp_dir: Path) -> None:
+    # Arrange
+    run_path = temp_dir / "released-run"
+    run_path.mkdir()
+    (run_path / "run.json").write_text(json.dumps(RELEASED_RUN_JSON))
+
+    # Act
+    actual = RunDirectory(run_path).read_metadata()
+
+    # Assert
+    assert actual == LegacyRunMetadata(
+        model="claude-sonnet-4-5",
+        git_hash="released-sha",
+        test_set=1,
+        notes="released run",
+        created_at=datetime.fromisoformat("2026-01-02T03:04:05"),
+    )
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {**RELEASED_RUN_JSON, "solve_configuration": SOLVE_CONFIGURATION},
+        {**RELEASED_RUN_JSON, "schema_version": 2},
+        {
+            **RELEASED_RUN_JSON,
+            LEGACY_SOLVE_CONFIGURATION_KEY: SOLVE_CONFIGURATION,
+        },
+        {key: value for key, value in RELEASED_RUN_JSON.items() if key != "git_hash"},
+        {**RELEASED_RUN_JSON, "git_hash": None},
+        {**RELEASED_RUN_JSON, "test_set": True},
+        {**RELEASED_RUN_JSON, "notes": None},
+        {**RELEASED_RUN_JSON, "created_at": "not-a-timestamp"},
+        {**RELEASED_RUN_JSON, "created_at": "2026-01-02"},
+        {**RELEASED_RUN_JSON, "created_at": "2026-01-02 03:04:05"},
+        {**RELEASED_RUN_JSON, "created_at": "2026-01-02T03:04:05Z"},
+        {
+            **RELEASED_RUN_JSON,
+            LEGACY_SOLVE_CONFIGURATION_KEY: {
+                **RELEASED_RUN_JSON[LEGACY_SOLVE_CONFIGURATION_KEY],
+                "status": "",
+            },
+        },
+        {"schema_version": 1, "model": "m", "git_hash": "h", "solve_configuration": {}},
+        {"schema_version": 2, "git_hash": "h", "solve_configuration": SOLVE_CONFIGURATION},
+        {"schema_version": 2, "model": "m", "git_hash": "h", "solve_configuration": []},
+        {"model": "m", "git_hash": "h"},
+        [],
+        "not-an-object",
+    ],
+    ids=[
+        "both-keys",
+        "schema-versioned-released-key",
+        "context-era-configuration-under-released-key",
+        "missing-historical-field",
+        "invalid-git-hash",
+        "invalid-test-set",
+        "invalid-notes",
+        "invalid-created-at",
+        "date-only-created-at",
+        "space-separated-created-at",
+        "normalized-timezone-created-at",
+        "empty-released-status-field",
+        "wrong-schema-version",
+        "missing-model",
+        "configuration-not-an-object",
+        "no-configuration-key",
+        "not-a-mapping",
+        "not-json-object",
+    ],
+)
+def test_read_metadata_fails_closed(temp_dir: Path, document: object) -> None:
+    # Arrange
+    run_path = temp_dir / "broken-run"
+    run_path.mkdir()
+    (run_path / "run.json").write_text(json.dumps(document))
+
+    # Act / Assert
+    with pytest.raises(RunMetadataError):
+        RunDirectory(run_path).read_metadata()
+
+
+def test_read_metadata_rejects_unsafe_canonical_configuration(temp_dir: Path) -> None:
+    # Arrange
+    run_path = temp_dir / "unsafe-canonical-run"
+    run_path.mkdir()
+    document = {
+        "schema_version": 2,
+        "model": "m",
+        "git_hash": "h",
+        "solve_configuration": {
+            "models": {
+                "primary": {
+                    "transport": "anthropic",
+                    "model": "m",
+                    "apiKeyEnv": "KEY",
+                }
+            },
+            "modelRoles": {"default": "primary"},
+            "ttlSeconds": 86400,
+        },
+        "test_set": None,
+        "notes": "",
+        "created_at": "2026-01-02T03:04:05",
+    }
+    (run_path / "run.json").write_text(json.dumps(document))
+
+    # Act / Assert
+    with pytest.raises(RunMetadataError, match="invalid solve_configuration"):
+        RunDirectory(run_path).read_metadata()
+
+
+@pytest.mark.parametrize(
+    "extra_field",
+    [
+        {"context_id": "capability-marker"},
+        {"apiKey": "provider-key-marker"},
+        {"unexpected": "value"},
+    ],
+    ids=["context-capability", "api-key", "unknown"],
+)
+def test_read_metadata_rejects_unknown_canonical_fields(
+    temp_dir: Path, extra_field: dict[str, str]
+) -> None:
+    # Arrange
+    run_path = temp_dir / "canonical-with-extra-field"
+    run_path.mkdir()
+    document = RunMetadata(
+        model="m",
+        git_hash="h",
+        solve_configuration=SOLVE_CONFIGURATION,
+        created_at=datetime.fromisoformat("2026-01-02T03:04:05"),
+    ).to_dict()
+    document.update(extra_field)
+    (run_path / "run.json").write_text(json.dumps(document))
+
+    # Act / Assert
+    with pytest.raises(RunMetadataError, match="valid canonical metadata"):
+        RunDirectory(run_path).read_metadata()
+
+
+def test_migrating_released_metadata_preserves_history_and_drops_legacy_key(
+    temp_dir: Path,
+) -> None:
+    # Arrange
+    run_path = temp_dir / "migrate-run"
+    run_path.mkdir()
+    (run_path / "run.json").write_text(json.dumps(RELEASED_RUN_JSON))
+    run_dir = RunDirectory(run_path)
+    legacy = run_dir.read_metadata()
+    assert isinstance(legacy, LegacyRunMetadata)
+
+    # Act
+    migrated = run_dir.migrate_released_metadata(legacy, SOLVE_CONFIGURATION)
+
+    # Assert
+    assert json.loads((run_path / "run.json").read_text()) == {
+        "schema_version": 2,
+        "model": "claude-sonnet-4-5",
+        "git_hash": "released-sha",
+        "solve_configuration": SOLVE_CONFIGURATION,
+        "test_set": 1,
+        "notes": "released run",
+        "created_at": "2026-01-02T03:04:05",
+    }
+    assert run_dir.read_metadata() == migrated
+    assert not list(run_path.glob("*.tmp"))
+
+
+def test_failed_metadata_write_leaves_the_original_document_intact(temp_dir: Path) -> None:
+    # Arrange
+    run_path = temp_dir / "atomic-run"
+    run_path.mkdir()
+    original = json.dumps(RELEASED_RUN_JSON)
+    (run_path / "run.json").write_text(original)
+    run_dir = RunDirectory(run_path)
+    unsafe = RunMetadata(
+        model="m",
+        git_hash="h",
+        solve_configuration={**SOLVE_CONFIGURATION, "credentials": {"K": "secret"}},
+    )
+
+    # Act / Assert
+    with pytest.raises(SolveProfileError):
+        run_dir.write_metadata(unsafe)
+    assert (run_path / "run.json").read_text() == original
+    assert not list(run_path.glob("*.tmp"))

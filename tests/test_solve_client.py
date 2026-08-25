@@ -1,4 +1,4 @@
-"""Tests for the infuser client."""
+"""Tests for the solve server client."""
 
 import base64
 import json
@@ -11,11 +11,12 @@ import httpx
 import pytest
 import respx
 
-from sheetbench_runner.infuser import InfuserClient, SolveResponse
-from sheetbench_runner.infuser_base import (
-    InfuserContextExpiredError,
-    InfuserPermanentError,
-    InfuserTransientError,
+from sheetbench_runner.solve_client import (
+    NonRetryableSolveError,
+    RetryableSolveError,
+    SolveClient,
+    SolveContextExpiredError,
+    SolveResponse,
 )
 
 PRIMARY_MODEL: dict[str, object] = {
@@ -88,7 +89,7 @@ class TrackingStream(httpx.AsyncByteStream):
         self.closed = True
 
 
-async def activate_context(client: InfuserClient) -> None:
+async def activate_context(client: SolveClient) -> None:
     respx.post("http://localhost:3000/solve-contexts").mock(
         return_value=httpx.Response(
             201,
@@ -121,7 +122,7 @@ async def test_context_lifecycle_uses_contract_headers_and_bodies(tmp_path: Path
         return_value=httpx.Response(204)
     )
 
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         created = await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
         await client.upload_workbook(xlsx_file)
         await client.solve(workbook_id, "Test prompt")
@@ -189,7 +190,7 @@ async def test_context_request_repeats_shared_keys_and_supports_different_keys()
         )
     )
 
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         created = await client.create_solve_context(
             profile,
             {"primary": "shared-secret", "reviewer": "shared-secret", "judge": "other-secret"},
@@ -220,7 +221,7 @@ async def test_context_request_repeats_shared_keys_and_supports_different_keys()
 async def test_upload_and_solve_require_a_context(tmp_path: Path) -> None:
     xlsx_file = tmp_path / "test.xlsx"
     xlsx_file.write_bytes(b"fake-xlsx-content")
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         with pytest.raises(RuntimeError, match="solve context"):
             await client.upload_workbook(xlsx_file)
         with pytest.raises(RuntimeError, match="solve context"):
@@ -232,8 +233,8 @@ async def test_context_creation_error_never_exposes_apiKeyEnv_value() -> None:
     respx.post("http://localhost:3000/solve-contexts").mock(
         return_value=httpx.Response(400, text="invalid apiKeyEnv test-secret")
     )
-    async with InfuserClient("http://localhost:3000") as client:
-        with pytest.raises(InfuserPermanentError) as exc_info:
+    async with SolveClient("http://localhost:3000") as client:
+        with pytest.raises(NonRetryableSolveError) as exc_info:
             await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
 
     assert "test-secret" not in str(exc_info.value)
@@ -287,9 +288,9 @@ async def test_invalid_context_configuration_is_revoked_and_never_retained(
         return_value=httpx.Response(204)
     )
 
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         with pytest.raises(
-            InfuserPermanentError, match="Invalid solve context response"
+            NonRetryableSolveError, match="Invalid solve context response"
         ) as exc_info:
             await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
         with pytest.raises(RuntimeError, match="solve context"):
@@ -310,8 +311,8 @@ async def test_context_response_rejects_api_key_value_outside_configuration() ->
         return_value=httpx.Response(204)
     )
 
-    async with InfuserClient("http://localhost:3000") as client:
-        with pytest.raises(InfuserPermanentError, match="Invalid solve context response"):
+    async with SolveClient("http://localhost:3000") as client:
+        with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
             await client.create_solve_context(SOLVE_PROFILE, {"primary": CONTEXT_TOKEN})
 
     assert delete_route.call_count == 1
@@ -370,8 +371,8 @@ async def test_malformed_context_response_revokes_only_a_usable_id(
         return_value=httpx.Response(204)
     )
 
-    async with InfuserClient("http://localhost:3000") as client:
-        with pytest.raises(InfuserPermanentError, match="Invalid solve context response"):
+    async with SolveClient("http://localhost:3000") as client:
+        with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
             await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
 
     assert delete_route.call_count == int(should_revoke)
@@ -394,7 +395,7 @@ async def test_context_response_accepts_additive_top_level_fields() -> None:
     )
 
     # Act
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         context = await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
         await client.delete_solve_context()
 
@@ -416,8 +417,8 @@ async def test_context_response_missing_later_field_is_revoked(missing_field: st
         return_value=httpx.Response(204)
     )
 
-    async with InfuserClient("http://localhost:3000") as client:
-        with pytest.raises(InfuserPermanentError, match="Invalid solve context response"):
+    async with SolveClient("http://localhost:3000") as client:
+        with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
             await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
 
     assert delete_route.call_count == 1
@@ -443,8 +444,8 @@ async def test_context_response_without_usable_id_is_not_revoked(invalid_id: obj
         return_value=httpx.Response(204)
     )
 
-    async with InfuserClient("http://localhost:3000") as client:
-        with pytest.raises(InfuserPermanentError, match="Invalid solve context response"):
+    async with SolveClient("http://localhost:3000") as client:
+        with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
             await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
 
     assert delete_route.call_count == 0
@@ -465,9 +466,9 @@ async def test_response_validation_error_survives_failed_revocation_without_leak
         return_value=httpx.Response(500, text="cleanup leaked test-secret context-to-revoke")
     )
 
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         with pytest.raises(
-            InfuserPermanentError, match="Invalid solve context response"
+            NonRetryableSolveError, match="Invalid solve context response"
         ) as exc_info:
             await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
         with pytest.raises(RuntimeError, match="solve context"):
@@ -494,7 +495,7 @@ async def test_upload_and_solve_success(tmp_path: Path) -> None:
         return_value=httpx.Response(200, json={**solve_response(), "workbookId": workbook_uuid})
     )
 
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
         workbook_id = await client.upload_workbook(xlsx_file)
         response = await client.solve(workbook_id, "Test prompt")
@@ -528,7 +529,7 @@ async def test_upload_accepts_additive_response_fields(tmp_path: Path) -> None:
     )
 
     # Act
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
         workbook_id = await client.upload_workbook(xlsx_file)
 
@@ -545,7 +546,7 @@ async def test_solve_without_output_workbook_preserves_transcript() -> None:
     respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
 
     # Act
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
         response = await client.solve("wb-123", "Test prompt")
 
@@ -573,7 +574,7 @@ async def test_solve_accepts_additive_response_fields() -> None:
     respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
 
     # Act
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
         response = await client.solve("wb-123", "Test prompt")
 
@@ -593,7 +594,7 @@ async def test_solve_accepts_whitespace_in_output_workbook_base64(separator: str
     respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
 
     # Act
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
         response = await client.solve("wb-123", "Test prompt")
 
@@ -612,9 +613,9 @@ async def test_solve_rejects_other_whitespace_in_output_workbook_base64(separato
     respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
 
     # Act and assert
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
-        with pytest.raises(InfuserPermanentError, match="Invalid solve response"):
+        with pytest.raises(NonRetryableSolveError, match="Invalid solve response"):
             await client.solve("wb-123", "Test prompt")
 
 
@@ -642,9 +643,9 @@ async def test_upload_rejects_malformed_success_response(tmp_path: Path, body: o
     respx.post("http://localhost:3000/workbooks/upload").mock(
         return_value=httpx.Response(200, json=body)
     )
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
-        with pytest.raises(InfuserPermanentError, match="Invalid upload response") as exc_info:
+        with pytest.raises(NonRetryableSolveError, match="Invalid upload response") as exc_info:
             await client.upload_workbook(xlsx_file)
     assert repr(body) not in str(exc_info.value)
 
@@ -693,9 +694,9 @@ async def test_solve_rejects_malformed_success_response(field: str, value: objec
     body = solve_response()
     body[field] = value
     respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
-        with pytest.raises(InfuserPermanentError, match="Invalid solve response") as exc_info:
+        with pytest.raises(NonRetryableSolveError, match="Invalid solve response") as exc_info:
             await client.solve("wb-123", "Test prompt")
     assert "secret response body" not in str(exc_info.value)
 
@@ -704,13 +705,13 @@ async def test_solve_rejects_malformed_success_response(field: str, value: objec
 async def test_solve_rejects_oversized_response_before_json_parsing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("sheetbench_runner.infuser.MAX_SOLVE_RESPONSE_BYTES", 100)
+    monkeypatch.setattr("sheetbench_runner.solve_client.MAX_SOLVE_RESPONSE_BYTES", 100)
     respx.post("http://localhost:3000/solve").mock(
         return_value=httpx.Response(200, content=b"{" + b" " * 100 + b"}")
     )
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
-        with pytest.raises(InfuserPermanentError, match="Invalid solve response"):
+        with pytest.raises(NonRetryableSolveError, match="Invalid solve response"):
             await client.solve("wb-123", "Test prompt")
 
 
@@ -718,15 +719,15 @@ async def test_solve_rejects_oversized_response_before_json_parsing(
 async def test_solve_stops_consuming_and_closes_oversized_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("sheetbench_runner.infuser.MAX_SOLVE_RESPONSE_BYTES", 100)
+    monkeypatch.setattr("sheetbench_runner.solve_client.MAX_SOLVE_RESPONSE_BYTES", 100)
     stream = TrackingStream([b"{" + b" " * 59, b" " * 60, b"never-consumed"])
     respx.post("http://localhost:3000/solve").mock(
         return_value=httpx.Response(200, headers={"Content-Length": "1"}, stream=stream)
     )
 
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
-        with pytest.raises(InfuserPermanentError, match="Invalid solve response"):
+        with pytest.raises(NonRetryableSolveError, match="Invalid solve response"):
             await client.solve("wb-123", "Test prompt")
 
     assert stream.yielded == 2
@@ -737,15 +738,15 @@ async def test_solve_stops_consuming_and_closes_oversized_stream(
 async def test_solve_rejects_content_length_before_consuming_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("sheetbench_runner.infuser.MAX_SOLVE_RESPONSE_BYTES", 100)
+    monkeypatch.setattr("sheetbench_runner.solve_client.MAX_SOLVE_RESPONSE_BYTES", 100)
     stream = TrackingStream([b"never-consumed"])
     respx.post("http://localhost:3000/solve").mock(
         return_value=httpx.Response(200, headers={"Content-Length": "101"}, stream=stream)
     )
 
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
-        with pytest.raises(InfuserPermanentError, match="Invalid solve response"):
+        with pytest.raises(NonRetryableSolveError, match="Invalid solve response"):
             await client.solve("wb-123", "Test prompt")
 
     assert stream.yielded == 0
@@ -756,26 +757,26 @@ async def test_solve_rejects_content_length_before_consuming_stream(
 async def test_solve_rejects_workbook_over_decoded_size_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("sheetbench_runner.infuser.MAX_WORKBOOK_BYTES", 3)
+    monkeypatch.setattr("sheetbench_runner.solve_client.MAX_WORKBOOK_BYTES", 3)
     respx.post("http://localhost:3000/solve").mock(
         return_value=httpx.Response(200, json=solve_response())
     )
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
-        with pytest.raises(InfuserPermanentError, match="Invalid solve response"):
+        with pytest.raises(NonRetryableSolveError, match="Invalid solve response"):
             await client.solve("wb-123", "Test prompt")
 
 
 @pytest.mark.parametrize(
     ("status_code", "error_type"),
-    [(500, InfuserTransientError), (400, InfuserPermanentError)],
+    [(500, RetryableSolveError), (400, NonRetryableSolveError)],
 )
 @respx.mock
 async def test_solve_http_errors(status_code: int, error_type: type[Exception]) -> None:
     respx.post("http://localhost:3000/solve").mock(
         return_value=httpx.Response(status_code, text="server error")
     )
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
         with pytest.raises(error_type, match=str(status_code)):
             await client.solve("wb-123", "Test prompt")
@@ -788,9 +789,9 @@ async def test_upload_connection_error_raises_transient(tmp_path: Path) -> None:
     respx.post("http://localhost:3000/workbooks/upload").mock(
         side_effect=httpx.ConnectError("Connection refused")
     )
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
-        with pytest.raises(InfuserTransientError, match="Connection"):
+        with pytest.raises(RetryableSolveError, match="Connection"):
             await client.upload_workbook(xlsx_file)
 
 
@@ -804,9 +805,9 @@ async def test_upload_401_is_retryable_context_expiry(tmp_path: Path) -> None:
     )
 
     # Act and assert
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
-        with pytest.raises(InfuserContextExpiredError, match="solve context expired"):
+        with pytest.raises(SolveContextExpiredError, match="solve context expired"):
             await client.upload_workbook(xlsx_file)
 
 
@@ -818,9 +819,9 @@ async def test_solve_401_is_retryable_context_expiry() -> None:
     )
 
     # Act and assert
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
-        with pytest.raises(InfuserContextExpiredError, match="solve context expired"):
+        with pytest.raises(SolveContextExpiredError, match="solve context expired"):
             await client.solve("wb-123", "Test prompt")
 
 
@@ -832,7 +833,7 @@ async def test_delete_accepts_already_expired_context() -> None:
     )
 
     # Act
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
         await client.delete_solve_context()
 
@@ -850,7 +851,7 @@ async def test_download_and_status_never_receive_context_header() -> None:
     status_route = respx.get("http://localhost:3000/status").mock(
         return_value=httpx.Response(200, json={"version": "abc1234"})
     )
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
         assert await client.download_workbook("wb-123") == b"downloaded"
         assert (await client.get_status())["version"] == "abc1234"
@@ -885,7 +886,7 @@ async def test_grid_api_key_never_installs_authorization_header(
     delete_route = respx.delete("http://localhost:3000/solve-contexts/current").mock(
         return_value=httpx.Response(204)
     )
-    async with InfuserClient("http://localhost:3000") as client:
+    async with SolveClient("http://localhost:3000") as client:
         await client.get_status()
         await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
         await client.upload_workbook(xlsx_file)
