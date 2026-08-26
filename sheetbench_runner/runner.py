@@ -272,6 +272,7 @@ class TaskRunner:
             result = TaskResult(
                 task_id=task.id,
                 status=TaskStatus.RUNNING,
+                input_file=task.input_relpath,
                 started_at=datetime.now(),
             )
 

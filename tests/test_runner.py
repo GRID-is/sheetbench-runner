@@ -1,5 +1,6 @@
 """Tests for once-per-run solve context orchestration."""
 
+import base64
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,7 +11,7 @@ import httpx
 import pytest
 import respx
 
-from sheetbench_runner.entities import SolveUsage, Task
+from sheetbench_runner.entities import EvaluationResult, SolveUsage, Task
 from sheetbench_runner.run_directory import RunDirectory, RunMetadataError
 from sheetbench_runner.runner import RunStats, TaskRunner, run
 from sheetbench_runner.solve_client import (
@@ -535,3 +536,44 @@ async def test_missing_output_workbook_still_writes_transcript(
     assert json.loads(transcript_path.read_text()) == transcript
     evaluator.evaluate.assert_not_called()
     assert stats.errors == 1
+
+
+async def test_results_row_records_the_input_workbook_relative_to_the_dataset(
+    tmp_path: Path,
+    sample_task_v2: Task,
+) -> None:
+    # Arrange
+    run_path = tmp_path / "run"
+    run_path.mkdir()
+    input_path = tmp_path / "input.xlsx"
+    input_path.write_bytes(b"input")
+    solve_client = Mock()
+    solve_client.upload_workbook = AsyncMock(return_value="wb-123")
+    solve_client.solve = AsyncMock(
+        return_value=SolveResponse(
+            id="solve-wb-123",
+            model="opaque-model",
+            workbook_id="wb-123",
+            usage=SolveUsage(turns=1, tool_calls=0, input_tokens=2, output_tokens=3),
+            output_xlsx=base64.b64encode(b"output"),
+            transcript={"messages": []},
+        )
+    )
+    dataset = Mock()
+    dataset.get_input_path.return_value = input_path
+    evaluator = Mock()
+    evaluator.evaluate.return_value = EvaluationResult(passed=True)
+    runner = TaskRunner(
+        solve_client=solve_client,
+        evaluator=evaluator,
+        dataset=dataset,
+        run_dir=RunDirectory(run_path),
+    )
+
+    # Act
+    await runner.run_all([sample_task_v2])
+
+    # Assert
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert row["input_file"] == "spreadsheet/01_bond_accounting/01_01_input.xlsx"
+    assert row["output_file"] == "01_01-output.xlsx"

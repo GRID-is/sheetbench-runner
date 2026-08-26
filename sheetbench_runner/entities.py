@@ -114,6 +114,7 @@ class TaskResult:
     tool_calls: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    input_file: str | None = None
     transcript_file: str | None = None
     output_file: str | None = None
     result: str | None = None  # "pass" | "fail"
@@ -133,6 +134,8 @@ class TaskResult:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
         }
+        if self.input_file:
+            d["input_file"] = self.input_file
         if self.transcript_file:
             d["transcript_file"] = self.transcript_file
         if self.output_file:
