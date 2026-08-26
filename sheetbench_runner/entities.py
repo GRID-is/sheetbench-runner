@@ -3,9 +3,11 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from .solve_profile import validate_sanitized_configuration
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, StrictInt
+
+from .solve_profile import SanitizedConfiguration
 
 
 class TaskStatus(StrEnum):
@@ -25,9 +27,10 @@ class InstructionType(StrEnum):
     SHEET_LEVEL = "Sheet-Level Manipulation"
 
 
-@dataclass(frozen=True)
-class Task:
+class Task(BaseModel):
     """A task from the SpreadsheetBench dataset."""
+
+    model_config = ConfigDict(frozen=True, coerce_numbers_to_str=True)
 
     id: str
     instruction: str
@@ -37,41 +40,18 @@ class Task:
     answer_sheet: str | None = None
     data_position: str | None = None
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Task":
-        """Create a Task from a dataset.json entry."""
-        return cls(
-            id=str(data["id"]),
-            instruction=data["instruction"],
-            spreadsheet_path=data["spreadsheet_path"],
-            instruction_type=data["instruction_type"],
-            answer_position=data["answer_position"],
-            answer_sheet=data.get("answer_sheet"),
-            data_position=data.get("data_position"),
-        )
 
-
-@dataclass(frozen=True)
-class SolveUsage:
+class SolveUsage(BaseModel):
     """Usage statistics from a solve response."""
 
-    turns: int
-    tool_calls: int
-    input_tokens: int
-    output_tokens: int
-    planning_turns: int | None = None
-    planning_tool_calls: int | None = None
+    model_config = ConfigDict(frozen=True)
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SolveUsage":
-        return cls(
-            turns=data["turns"],
-            tool_calls=data["tool_calls"],
-            input_tokens=data["input_tokens"],
-            output_tokens=data["output_tokens"],
-            planning_turns=data.get("planning_turns"),
-            planning_tool_calls=data.get("planning_tool_calls"),
-        )
+    turns: NonNegativeInt
+    tool_calls: NonNegativeInt
+    input_tokens: NonNegativeInt
+    output_tokens: NonNegativeInt
+    planning_turns: NonNegativeInt | None = None
+    planning_tool_calls: NonNegativeInt | None = None
 
 
 @dataclass(frozen=True)
@@ -127,28 +107,15 @@ class TaskResult:
         return d
 
 
-SCHEMA_VERSION = 2
-
-
-@dataclass(frozen=True)
-class RunMetadata:
+class RunMetadata(BaseModel):
     """Canonical run.json metadata."""
 
-    model: str
-    git_hash: str
-    solve_configuration: dict[str, Any]
-    test_set: int | None = None
-    notes: str = ""
-    created_at: datetime = field(default_factory=datetime.now)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize the whitelisted canonical fields only."""
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "model": self.model,
-            "git_hash": self.git_hash,
-            "solve_configuration": validate_sanitized_configuration(self.solve_configuration),
-            "test_set": self.test_set,
-            "notes": self.notes,
-            "created_at": self.created_at.isoformat(),
-        }
+    schema_version: Literal[2] = 2
+    model: Annotated[str, Field(min_length=1)]
+    git_hash: str
+    solve_configuration: SanitizedConfiguration
+    test_set: StrictInt | None = None
+    notes: str = ""
+    created_at: datetime = Field(default_factory=datetime.now)

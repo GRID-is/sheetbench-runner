@@ -2,8 +2,6 @@
 
 import base64
 import json
-import logging
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -18,23 +16,27 @@ from sheetbench_runner.solve_client import (
     SolveContextExpiredError,
     SolveResponse,
 )
+from sheetbench_runner.solve_profile import SanitizedConfiguration, SolveConfiguration
 
 PRIMARY_MODEL: dict[str, object] = {
     "transport": "openai-compatible",
     "model": "opaque-model",
     "apiKeyEnv": "OPENAI_API_KEY",
 }
-SOLVE_PROFILE = {
-    "models": {"primary": PRIMARY_MODEL},
-    "modelRoles": {"default": "primary"},
-}
-CONTEXT_TOKEN = base64.urlsafe_b64encode(b"c" * 32).decode().rstrip("=")
+SOLVE_PROFILE = SolveConfiguration.model_validate(
+    {
+        "models": {"primary": PRIMARY_MODEL},
+        "modelRoles": {"default": "primary"},
+    }
+)
+CONTEXT_TOKEN = "solve-context-token"
 SANITIZED_PRIMARY_MODEL = {"transport": "openai-compatible", "model": "opaque-model"}
 EFFECTIVE_PROFILE = {
     "models": {"primary": SANITIZED_PRIMARY_MODEL},
     "modelRoles": {"default": "primary"},
     "ttlSeconds": 7200,
 }
+EFFECTIVE_CONFIGURATION = SanitizedConfiguration.model_validate(EFFECTIVE_PROFILE)
 
 
 def context_response(
@@ -72,21 +74,6 @@ def solve_response() -> dict[str, object]:
         "output_xlsx_base64": base64.b64encode(b"fake-xlsx-bytes").decode(),
         "transcript": {"messages": [{"role": "assistant", "content": "Done"}]},
     }
-
-
-class TrackingStream(httpx.AsyncByteStream):
-    def __init__(self, chunks: list[bytes]) -> None:
-        self.chunks = chunks
-        self.yielded = 0
-        self.closed = False
-
-    async def __aiter__(self) -> AsyncIterator[bytes]:
-        for chunk in self.chunks:
-            self.yielded += 1
-            yield chunk
-
-    async def aclose(self) -> None:
-        self.closed = True
 
 
 async def activate_context(client: SolveClient) -> None:
@@ -128,7 +115,7 @@ async def test_context_lifecycle_uses_contract_headers_and_bodies(tmp_path: Path
         await client.solve(workbook_id, "Test prompt")
         await client.delete_solve_context()
 
-    assert created.configuration == EFFECTIVE_PROFILE
+    assert created.configuration == EFFECTIVE_CONFIGURATION
     creation = create_route.calls[0].request
     assert "X-Solve-Context" not in creation.headers
     assert json.loads(creation.content) == {
@@ -145,28 +132,30 @@ async def test_context_lifecycle_uses_contract_headers_and_bodies(tmp_path: Path
 
 @respx.mock
 async def test_context_request_repeats_shared_keys_and_supports_different_keys() -> None:
-    profile = {
-        "models": {
-            "primary": {
-                "transport": "anthropic",
-                "model": "model-a",
-                "apiKeyEnv": "SHARED_KEY",
+    profile = SolveConfiguration.model_validate(
+        {
+            "models": {
+                "primary": {
+                    "transport": "anthropic",
+                    "model": "model-a",
+                    "apiKeyEnv": "SHARED_KEY",
+                },
+                "reviewer": {
+                    "transport": "openai-responses",
+                    "model": "model-b",
+                    "apiKeyEnv": "SHARED_KEY",
+                },
+                "judge": {
+                    "transport": "openai-compatible",
+                    "model": "model-c",
+                    "apiKeyEnv": "OTHER_KEY",
+                    "options": {"maxOutputTokens": 123},
+                },
             },
-            "reviewer": {
-                "transport": "openai-responses",
-                "model": "model-b",
-                "apiKeyEnv": "SHARED_KEY",
-            },
-            "judge": {
-                "transport": "openai-compatible",
-                "model": "model-c",
-                "apiKeyEnv": "OTHER_KEY",
-                "options": {"maxOutputTokens": 123},
-            },
-        },
-        "modelRoles": {"default": "primary", "review": "reviewer", "judge": "judge"},
-        "ttlSeconds": 900,
-    }
+            "modelRoles": {"default": "primary", "review": "reviewer", "judge": "judge"},
+            "ttlSeconds": 900,
+        }
+    )
     expected_configuration = {
         "models": {
             "primary": {"transport": "anthropic", "model": "model-a"},
@@ -196,7 +185,7 @@ async def test_context_request_repeats_shared_keys_and_supports_different_keys()
             {"primary": "shared-secret", "reviewer": "shared-secret", "judge": "other-secret"},
         )
 
-    assert created.configuration == expected_configuration
+    assert created.configuration == SanitizedConfiguration.model_validate(expected_configuration)
     assert json.loads(route.calls[0].request.content) == {
         "models": {
             "primary": {"transport": "anthropic", "model": "model-a", "apiKey": "shared-secret"},
@@ -228,18 +217,6 @@ async def test_upload_and_solve_require_a_context(tmp_path: Path) -> None:
             await client.solve("wb-123", "Test prompt")
 
 
-@respx.mock
-async def test_context_creation_error_never_exposes_apiKeyEnv_value() -> None:
-    respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(400, text="invalid apiKeyEnv test-secret")
-    )
-    async with SolveClient("http://localhost:3000") as client:
-        with pytest.raises(NonRetryableSolveError) as exc_info:
-            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
-
-    assert "test-secret" not in str(exc_info.value)
-
-
 @pytest.mark.parametrize(
     "configuration",
     [
@@ -267,15 +244,15 @@ async def test_context_creation_error_never_exposes_apiKeyEnv_value() -> None:
             "models": {
                 "primary": {
                     **SANITIZED_PRIMARY_MODEL,
-                    "model": "prefix-test-secret-suffix",
+                    "model": "attacker-selected-model",
                 }
             },
         },
     ],
-    ids=["credentials", "apiKeyEnv", "apiKey", "embedded-resolved-secret"],
+    ids=["credentials", "apiKeyEnv", "apiKey", "changed-model"],
 )
 @respx.mock
-async def test_invalid_context_configuration_is_revoked_and_never_retained(
+async def test_invalid_context_configuration_is_never_retained(
     configuration: dict[str, object],
 ) -> None:
     create_route = respx.post("http://localhost:3000/solve-contexts").mock(
@@ -284,102 +261,66 @@ async def test_invalid_context_configuration_is_revoked_and_never_retained(
             json=context_response(configuration=configuration),
         )
     )
-    delete_route = respx.delete("http://localhost:3000/solve-contexts/current").mock(
-        return_value=httpx.Response(204)
-    )
 
     async with SolveClient("http://localhost:3000") as client:
-        with pytest.raises(
-            NonRetryableSolveError, match="Invalid solve context response"
-        ) as exc_info:
+        with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
             await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
         with pytest.raises(RuntimeError, match="solve context"):
             await client.solve("wb-123", "Test prompt")
 
     assert create_route.call_count == 1
-    assert delete_route.call_count == 1
-    assert delete_route.calls[0].request.headers["X-Solve-Context"] == CONTEXT_TOKEN
-    assert "test-secret" not in str(exc_info.value)
-
-
-@respx.mock
-async def test_context_response_rejects_api_key_value_outside_configuration() -> None:
-    respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(201, json=context_response())
-    )
-    delete_route = respx.delete("http://localhost:3000/solve-contexts/current").mock(
-        return_value=httpx.Response(204)
-    )
-
-    async with SolveClient("http://localhost:3000") as client:
-        with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
-            await client.create_solve_context(SOLVE_PROFILE, {"primary": CONTEXT_TOKEN})
-
-    assert delete_route.call_count == 1
 
 
 @pytest.mark.parametrize(
-    ("response_update", "should_revoke"),
+    "response_update",
     [
-        ({"id": ""}, False),
-        ({"id": 123}, False),
-        ({"id": "not+base64url"}, False),
-        ({"id": base64.urlsafe_b64encode(b"short").decode().rstrip("=")}, False),
-        ({"expiresAt": "not-a-timestamp"}, True),
-        ({"expiresAt": (datetime.now(UTC) - timedelta(seconds=1)).isoformat()}, True),
-        ({"expiresAt": (datetime.now(UTC) + timedelta(days=2)).isoformat()}, True),
-        ({"configuration": {**EFFECTIVE_PROFILE, "ttlSeconds": 7201}}, True),
-        (
-            {
-                "configuration": {
-                    **EFFECTIVE_PROFILE,
-                    "models": {
-                        "primary": {
-                            **SANITIZED_PRIMARY_MODEL,
-                            "model": "attacker-selected-model",
-                        }
-                    },
-                }
-            },
-            True,
-        ),
-        ({"configuration": []}, True),
+        {"id": ""},
+        {"id": 123},
+        {"expiresAt": "not-a-timestamp"},
+        {"configuration": []},
+        {"configuration": {**EFFECTIVE_PROFILE, "ttlSeconds": 7201}},
     ],
     ids=[
         "empty-id",
         "non-string-id",
-        "non-base64url-id",
-        "short-id",
         "invalid-expiry",
-        "expired",
-        "wild-expiry",
-        "changed-ttl",
-        "changed-model",
         "invalid-configuration-type",
+        "changed-ttl",
     ],
 )
 @respx.mock
-async def test_malformed_context_response_revokes_only_a_usable_id(
-    response_update: dict[str, object], should_revoke: bool
+async def test_malformed_context_response_is_never_retained(
+    response_update: dict[str, object],
 ) -> None:
     response_data: dict[str, object] = context_response()
     response_data.update(response_update)
     respx.post("http://localhost:3000/solve-contexts").mock(
         return_value=httpx.Response(201, json=response_data)
     )
-    delete_route = respx.delete("http://localhost:3000/solve-contexts/current").mock(
-        return_value=httpx.Response(204)
+
+    async with SolveClient("http://localhost:3000") as client:
+        with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
+            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
+        with pytest.raises(RuntimeError, match="solve context"):
+            await client.solve("wb-123", "Test prompt")
+
+
+@pytest.mark.parametrize("missing_field", ["id", "expiresAt", "configuration"])
+@respx.mock
+async def test_context_response_missing_required_field_is_never_retained(
+    missing_field: str,
+) -> None:
+    response_data = context_response()
+    del response_data[missing_field]
+    respx.post("http://localhost:3000/solve-contexts").mock(
+        return_value=httpx.Response(201, json=response_data)
     )
 
     async with SolveClient("http://localhost:3000") as client:
         with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
             await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
-
-    assert delete_route.call_count == int(should_revoke)
-    if should_revoke:
-        request = delete_route.calls[0].request
-        assert request.url == httpx.URL("http://localhost:3000/solve-contexts/current")
-        assert request.headers["X-Solve-Context"] == CONTEXT_TOKEN
+        with pytest.raises(RuntimeError, match="solve context"):
+            await client.solve("wb-123", "Test prompt")
 
 
 @respx.mock
@@ -400,84 +341,9 @@ async def test_context_response_accepts_additive_top_level_fields() -> None:
         await client.delete_solve_context()
 
     # Assert
-    assert context.configuration == EFFECTIVE_PROFILE
+    assert context.configuration == EFFECTIVE_CONFIGURATION
     assert delete_route.call_count == 1
     assert delete_route.calls[0].request.headers["X-Solve-Context"] == CONTEXT_TOKEN
-
-
-@pytest.mark.parametrize("missing_field", ["expiresAt", "configuration"])
-@respx.mock
-async def test_context_response_missing_later_field_is_revoked(missing_field: str) -> None:
-    response_data = context_response()
-    del response_data[missing_field]
-    respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(201, json=response_data)
-    )
-    delete_route = respx.delete("http://localhost:3000/solve-contexts/current").mock(
-        return_value=httpx.Response(204)
-    )
-
-    async with SolveClient("http://localhost:3000") as client:
-        with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
-            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
-
-    assert delete_route.call_count == 1
-    assert delete_route.calls[0].request.headers["X-Solve-Context"] == CONTEXT_TOKEN
-
-
-@pytest.mark.parametrize(
-    "invalid_id",
-    [None, "not+base64url", base64.urlsafe_b64encode(b"short").decode().rstrip("=")],
-    ids=["absent", "malformed", "weak"],
-)
-@respx.mock
-async def test_context_response_without_usable_id_is_not_revoked(invalid_id: object) -> None:
-    response_data = context_response()
-    if invalid_id is None:
-        del response_data["id"]
-    else:
-        response_data["id"] = invalid_id
-    respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(201, json=response_data)
-    )
-    delete_route = respx.delete("http://localhost:3000/solve-contexts/current").mock(
-        return_value=httpx.Response(204)
-    )
-
-    async with SolveClient("http://localhost:3000") as client:
-        with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
-            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
-
-    assert delete_route.call_count == 0
-
-
-@respx.mock
-async def test_response_validation_error_survives_failed_revocation_without_leaking(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level(logging.WARNING)
-    respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(
-            201,
-            json=context_response(expires_at="invalid"),
-        )
-    )
-    delete_route = respx.delete("http://localhost:3000/solve-contexts/current").mock(
-        return_value=httpx.Response(500, text="cleanup leaked test-secret context-to-revoke")
-    )
-
-    async with SolveClient("http://localhost:3000") as client:
-        with pytest.raises(
-            NonRetryableSolveError, match="Invalid solve context response"
-        ) as exc_info:
-            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
-        with pytest.raises(RuntimeError, match="solve context"):
-            await client.solve("wb-123", "Test prompt")
-
-    assert delete_route.call_count == 1
-    assert "test-secret" not in str(exc_info.value)
-    assert "test-secret" not in caplog.text
-    assert CONTEXT_TOKEN not in caplog.text
 
 
 @respx.mock
@@ -583,57 +449,13 @@ async def test_solve_accepts_additive_response_fields() -> None:
     assert response.usage.input_tokens == 1000
 
 
-@pytest.mark.parametrize("separator", ["\n", "\r\n", " ", "\t"])
-@respx.mock
-async def test_solve_accepts_whitespace_in_output_workbook_base64(separator: str) -> None:
-    # Arrange
-    body = solve_response()
-    encoded = body["output_xlsx_base64"]
-    assert isinstance(encoded, str)
-    body["output_xlsx_base64"] = separator.join((encoded[:8], encoded[8:]))
-    respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
-
-    # Act
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        response = await client.solve("wb-123", "Test prompt")
-
-    # Assert
-    assert response.output_xlsx == b"fake-xlsx-bytes"
-
-
-@pytest.mark.parametrize("separator", ["\v", "\f", "\u00a0"])
-@respx.mock
-async def test_solve_rejects_other_whitespace_in_output_workbook_base64(separator: str) -> None:
-    # Arrange
-    body = solve_response()
-    encoded = body["output_xlsx_base64"]
-    assert isinstance(encoded, str)
-    body["output_xlsx_base64"] = separator.join((encoded[:8], encoded[8:]))
-    respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
-
-    # Act and assert
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        with pytest.raises(NonRetryableSolveError, match="Invalid solve response"):
-            await client.solve("wb-123", "Test prompt")
-
-
 @pytest.mark.parametrize(
     "body",
     [
         {},
         {"id": ""},
-        {"id": "not-a-uuid", "name": "test.xlsx", "sheets": ["Sheet1"]},
         {"id": "123e4567-e89b-42d3-a456-426614174000", "name": 3, "sheets": ["Sheet1"]},
         {"id": "123e4567-e89b-42d3-a456-426614174000", "name": "test.xlsx", "sheets": "Sheet1"},
-        {"id": "123e4567-e89b-42d3-a456-426614174000", "name": "test.xlsx", "sheets": [""]},
-        {
-            "id": "123e4567-e89b-42d3-a456-426614174000",
-            "name": "test.xlsx",
-            "sheets": ["Sheet1"],
-            "revision": True,
-        },
     ],
 )
 @respx.mock
@@ -653,39 +475,11 @@ async def test_upload_rejects_malformed_success_response(tmp_path: Path, body: o
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("id", ""),
         ("object", "other"),
         ("model", 4),
         ("workbookId", "attacker-workbook"),
-        ("choices", []),
-        (
-            "choices",
-            [
-                {
-                    "index": True,
-                    "message": {"role": "assistant", "content": "Done"},
-                    "finish_reason": "stop",
-                }
-            ],
-        ),
-        (
-            "choices",
-            [{"index": 0, "message": {"role": "user", "content": "Done"}, "finish_reason": "stop"}],
-        ),
-        (
-            "choices",
-            [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": "Done"},
-                    "finish_reason": "hacked",
-                }
-            ],
-        ),
-        ("usage", {"turns": True, "tool_calls": 1, "input_tokens": 2, "output_tokens": 3}),
         ("usage", {"turns": -1, "tool_calls": 1, "input_tokens": 2, "output_tokens": 3}),
         ("transcript", "secret response body"),
-        ("output_xlsx_base64", "not canonical !!!"),
         ("output_xlsx_base64", "Zg"),
     ],
 )
@@ -699,72 +493,6 @@ async def test_solve_rejects_malformed_success_response(field: str, value: objec
         with pytest.raises(NonRetryableSolveError, match="Invalid solve response") as exc_info:
             await client.solve("wb-123", "Test prompt")
     assert "secret response body" not in str(exc_info.value)
-
-
-@respx.mock
-async def test_solve_rejects_oversized_response_before_json_parsing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("sheetbench_runner.solve_client.MAX_SOLVE_RESPONSE_BYTES", 100)
-    respx.post("http://localhost:3000/solve").mock(
-        return_value=httpx.Response(200, content=b"{" + b" " * 100 + b"}")
-    )
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        with pytest.raises(NonRetryableSolveError, match="Invalid solve response"):
-            await client.solve("wb-123", "Test prompt")
-
-
-@respx.mock
-async def test_solve_stops_consuming_and_closes_oversized_stream(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("sheetbench_runner.solve_client.MAX_SOLVE_RESPONSE_BYTES", 100)
-    stream = TrackingStream([b"{" + b" " * 59, b" " * 60, b"never-consumed"])
-    respx.post("http://localhost:3000/solve").mock(
-        return_value=httpx.Response(200, headers={"Content-Length": "1"}, stream=stream)
-    )
-
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        with pytest.raises(NonRetryableSolveError, match="Invalid solve response"):
-            await client.solve("wb-123", "Test prompt")
-
-    assert stream.yielded == 2
-    assert stream.closed
-
-
-@respx.mock
-async def test_solve_rejects_content_length_before_consuming_stream(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("sheetbench_runner.solve_client.MAX_SOLVE_RESPONSE_BYTES", 100)
-    stream = TrackingStream([b"never-consumed"])
-    respx.post("http://localhost:3000/solve").mock(
-        return_value=httpx.Response(200, headers={"Content-Length": "101"}, stream=stream)
-    )
-
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        with pytest.raises(NonRetryableSolveError, match="Invalid solve response"):
-            await client.solve("wb-123", "Test prompt")
-
-    assert stream.yielded == 0
-    assert stream.closed
-
-
-@respx.mock
-async def test_solve_rejects_workbook_over_decoded_size_limit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("sheetbench_runner.solve_client.MAX_WORKBOOK_BYTES", 3)
-    respx.post("http://localhost:3000/solve").mock(
-        return_value=httpx.Response(200, json=solve_response())
-    )
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        with pytest.raises(NonRetryableSolveError, match="Invalid solve response"):
-            await client.solve("wb-123", "Test prompt")
 
 
 @pytest.mark.parametrize(

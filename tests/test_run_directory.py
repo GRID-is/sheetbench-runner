@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from sheetbench_runner.entities import RunMetadata, TaskResult, TaskStatus
 from sheetbench_runner.run_directory import (
@@ -13,10 +14,9 @@ from sheetbench_runner.run_directory import (
     RunDirectory,
     RunMetadataError,
 )
-from sheetbench_runner.solve_profile import SolveProfileError
 
 SOLVE_CONFIGURATION: dict[str, Any] = {
-    "models": {"default": {"transport": "anthropic", "model": "claude-sonnet-5"}},
+    "models": {"default": {"transport": "anthropic", "model": "claude-sonnet-5", "options": None}},
     "modelRoles": {"default": "default"},
     "ttlSeconds": 86400,
 }
@@ -287,17 +287,10 @@ def test_create_preserves_existing_results(temp_dir: Path):
     ],
     ids=["apiKeyEnv", "apiKey", "credentials"],
 )
-def test_metadata_cannot_serialize_api_key_material(
-    temp_dir: Path, unsafe_configuration: dict[str, Any]
-) -> None:
-    # Arrange
-    run_dir = RunDirectory(temp_dir / "unsafe-run")
-    metadata = RunMetadata(model="m", git_hash="h", solve_configuration=unsafe_configuration)
-
+def test_metadata_cannot_hold_api_key_material(unsafe_configuration: dict[str, Any]) -> None:
     # Act / Assert
-    with pytest.raises(SolveProfileError):
-        run_dir.create(metadata)
-    assert not (temp_dir / "unsafe-run" / "run.json").exists()
+    with pytest.raises(ValidationError):
+        RunMetadata(model="m", git_hash="h", solve_configuration=unsafe_configuration)
 
 
 def test_read_metadata_returns_none_without_run_json(temp_dir: Path) -> None:
@@ -442,9 +435,6 @@ def test_read_metadata_decodes_legacy_document_with_only_model(temp_dir: Path) -
         {"notes": None},
         {"notes": 7},
         {"created_at": "not-a-timestamp"},
-        {"created_at": "2026-01-02"},
-        {"created_at": "2026-01-02 03:04:05"},
-        {"created_at": "2026-01-02T03:04:05Z"},
     ],
     ids=[
         "null-git-hash",
@@ -454,9 +444,6 @@ def test_read_metadata_decodes_legacy_document_with_only_model(temp_dir: Path) -
         "null-notes",
         "wrong-type-notes",
         "unparseable-created-at",
-        "date-only-created-at",
-        "space-separated-created-at",
-        "normalized-timezone-created-at",
     ],
 )
 def test_read_metadata_defaults_invalid_optional_legacy_fields(
@@ -486,6 +473,27 @@ def test_read_metadata_defaults_invalid_optional_legacy_fields(
         assert before <= actual.created_at <= after
 
 
+@pytest.mark.parametrize(
+    "created_at",
+    ["2026-01-02", "2026-01-02 03:04:05", "2026-01-02T03:04:05Z"],
+    ids=["date-only", "space-separated", "zulu"],
+)
+def test_read_metadata_keeps_any_parseable_legacy_timestamp(
+    temp_dir: Path, created_at: str
+) -> None:
+    # Arrange
+    run_path = temp_dir / "parseable-created-at-run"
+    run_path.mkdir()
+    (run_path / "run.json").write_text(json.dumps({**RELEASED_RUN_JSON, "created_at": created_at}))
+
+    # Act
+    actual = RunDirectory(run_path).read_metadata()
+
+    # Assert
+    assert isinstance(actual, LegacyRunMetadata)
+    assert actual.created_at == datetime.fromisoformat(created_at)
+
+
 def test_read_metadata_rejects_unsafe_canonical_configuration(temp_dir: Path) -> None:
     # Arrange
     run_path = temp_dir / "unsafe-canonical-run"
@@ -512,7 +520,7 @@ def test_read_metadata_rejects_unsafe_canonical_configuration(temp_dir: Path) ->
     (run_path / "run.json").write_text(json.dumps(document))
 
     # Act / Assert
-    with pytest.raises(RunMetadataError, match="invalid solve_configuration"):
+    with pytest.raises(RunMetadataError, match="valid canonical metadata"):
         RunDirectory(run_path).read_metadata()
 
 
@@ -536,7 +544,7 @@ def test_read_metadata_rejects_unknown_canonical_fields(
         git_hash="h",
         solve_configuration=SOLVE_CONFIGURATION,
         created_at=datetime.fromisoformat("2026-01-02T03:04:05"),
-    ).to_dict()
+    ).model_dump(mode="json")
     document.update(extra_field)
     (run_path / "run.json").write_text(json.dumps(document))
 
@@ -571,21 +579,24 @@ def test_migrating_released_metadata_preserves_history(temp_dir: Path) -> None:
     assert not list(run_path.glob("*.tmp"))
 
 
-def test_failed_metadata_write_leaves_the_original_document_intact(temp_dir: Path) -> None:
+def test_failed_metadata_write_leaves_the_original_document_intact(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Arrange
     run_path = temp_dir / "atomic-run"
     run_path.mkdir()
     original = json.dumps(RELEASED_RUN_JSON)
     (run_path / "run.json").write_text(original)
     run_dir = RunDirectory(run_path)
-    unsafe = RunMetadata(
-        model="m",
-        git_hash="h",
-        solve_configuration={**SOLVE_CONFIGURATION, "credentials": {"K": "secret"}},
-    )
+    metadata = RunMetadata(model="m", git_hash="h", solve_configuration=SOLVE_CONFIGURATION)
+
+    def failing_dump(*args: object, **kwargs: object) -> None:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr("sheetbench_runner.run_directory.json.dump", failing_dump)
 
     # Act / Assert
-    with pytest.raises(SolveProfileError):
-        run_dir.write_metadata(unsafe)
+    with pytest.raises(OSError):
+        run_dir.write_metadata(metadata)
     assert (run_path / "run.json").read_text() == original
     assert not list(run_path.glob("*.tmp"))

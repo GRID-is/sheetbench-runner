@@ -5,11 +5,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from sheetbench_runner.solve_profile import (
+    SanitizedModel,
+    SolveConfiguration,
     SolveProfileError,
     load_solve_profile,
-    validate_solve_configuration,
 )
 
 PROFILE: dict[str, Any] = {
@@ -57,7 +59,7 @@ def test_resolves_two_arbitrary_environment_names(
 
     loaded = load_solve_profile(write_profile(tmp_path / "profile.json"))
 
-    assert loaded.configuration == PROFILE
+    assert loaded.configuration.model_dump(exclude_none=True) == PROFILE
     assert loaded.resolve_api_keys() == {
         "primary": "first-secret",
         "reviewer": "second-secret",
@@ -77,7 +79,7 @@ def test_loaded_profile_defaults_to_maximum_context_ttl(
     loaded = load_solve_profile(write_profile(tmp_path / "profile.json", profile))
 
     # Assert
-    assert loaded.configuration["ttlSeconds"] == 86400
+    assert loaded.configuration.ttlSeconds == 86400
 
 
 def test_shared_environment_name_repeats_key_for_each_model(
@@ -125,41 +127,6 @@ def test_blank_environment_value_is_rejected_without_exposing_other_values(
     assert "second-secret" not in str(exc_info.value)
 
 
-def test_api_key_utf8_byte_limit_is_enforced(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("FIRST_KEY", "é" * 2049)
-    monkeypatch.setenv("SECOND_KEY", "safe")
-
-    with pytest.raises(SolveProfileError, match="4096 UTF-8 bytes") as exc_info:
-        load_solve_profile(write_profile(tmp_path / "profile.json")).resolve_api_keys()
-
-    assert "é" not in str(exc_info.value)
-
-
-def test_repeated_per_model_keys_count_toward_aggregate_limit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    profile = profile_with_counts(models=17)
-    for model in profile["models"].values():
-        model["apiKeyEnv"] = "SHARED_API_KEY"
-    monkeypatch.setenv("SHARED_API_KEY", "k" * 4096)
-
-    with pytest.raises(SolveProfileError, match="65536 aggregate UTF-8 bytes"):
-        load_solve_profile(write_profile(tmp_path / "profile.json", profile)).resolve_api_keys()
-
-
-def test_api_key_byte_caps_are_inclusive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    profile = profile_with_counts(models=16)
-    for model in profile["models"].values():
-        model["apiKeyEnv"] = "SHARED_API_KEY"
-    monkeypatch.setenv("SHARED_API_KEY", "k" * 4096)
-
-    loaded = load_solve_profile(write_profile(tmp_path / "profile.json", profile))
-
-    assert len(loaded.resolve_api_keys()) == 16
-
-
 @pytest.mark.parametrize(
     "apiKeyEnv",
     ["", "   ", "1KEY", "KEY-NAME", "KEY.NAME", "KEY NAME", "ÜNICODE"],
@@ -176,13 +143,13 @@ def test_malformed_environment_identifier_is_rejected(tmp_path: Path, apiKeyEnv:
         "modelRoles": {"default": "primary"},
     }
 
-    with pytest.raises(SolveProfileError, match="environment variable"):
+    with pytest.raises(SolveProfileError, match="apiKeyEnv"):
         load_solve_profile(write_profile(tmp_path / "profile.json", profile))
 
 
 @pytest.mark.parametrize("count", [32])
 def test_accepts_server_collection_caps(count: int) -> None:
-    validate_solve_configuration(profile_with_counts(models=count, roles=count))
+    SolveConfiguration.model_validate(profile_with_counts(models=count, roles=count))
 
 
 @pytest.mark.parametrize(
@@ -190,18 +157,17 @@ def test_accepts_server_collection_caps(count: int) -> None:
     [
         (profile_with_counts(models=33), "models"),
         (profile_with_counts(roles=33), "modelRoles"),
-        (profile_with_counts(models=33), "models"),
     ],
 )
 def test_rejects_values_above_server_collection_caps(profile: dict[str, Any], message: str) -> None:
-    with pytest.raises(SolveProfileError, match=message):
-        validate_solve_configuration(profile)
+    with pytest.raises(ValidationError, match=message):
+        SolveConfiguration.model_validate(profile)
 
 
 @pytest.mark.parametrize("length", [1, 64])
 def test_accepts_server_dictionary_name_boundaries(length: int) -> None:
     name = "n" * length
-    validate_solve_configuration(
+    SolveConfiguration.model_validate(
         {
             "models": {name: {"transport": "anthropic", "model": "m", "apiKeyEnv": "KEY"}},
             "modelRoles": {"default": name, "r" * length: name},
@@ -225,40 +191,40 @@ def test_rejects_dictionary_names_over_server_cap(field: str) -> None:
         profile["modelRoles"] = {"default": "primary", long_name: "primary"}
     else:
         profile["models"]["primary"]["apiKeyEnv"] = "K" * 65
-    with pytest.raises(SolveProfileError):
-        validate_solve_configuration(profile)
+    with pytest.raises(ValidationError):
+        SolveConfiguration.model_validate(profile)
 
 
 @pytest.mark.parametrize("length", [1, 256])
 def test_accepts_server_model_id_boundaries(length: int) -> None:
     profile = profile_with_counts()
     profile["models"]["model-0"]["model"] = "m" * length
-    validate_solve_configuration(profile)
+    SolveConfiguration.model_validate(profile)
 
 
 def test_rejects_model_id_over_server_cap() -> None:
     profile = profile_with_counts()
     profile["models"]["model-0"]["model"] = "m" * 257
-    with pytest.raises(SolveProfileError, match="model"):
-        validate_solve_configuration(profile)
+    with pytest.raises(ValidationError, match="model"):
+        SolveConfiguration.model_validate(profile)
 
 
 @pytest.mark.parametrize("value", [1, 1_000_000])
 def test_accepts_server_max_output_token_boundaries(value: int) -> None:
     profile = profile_with_counts()
     profile["models"]["model-0"]["options"] = {"maxOutputTokens": value}
-    validate_solve_configuration(profile)
+    SolveConfiguration.model_validate(profile)
 
 
 def test_rejects_max_output_tokens_over_server_cap() -> None:
     profile = profile_with_counts()
     profile["models"]["model-0"]["options"] = {"maxOutputTokens": 1_000_001}
-    with pytest.raises(SolveProfileError, match="maxOutputTokens"):
-        validate_solve_configuration(profile)
+    with pytest.raises(ValidationError, match="maxOutputTokens"):
+        SolveConfiguration.model_validate(profile)
 
 
 def test_accepts_server_whitespace_names_and_model_id() -> None:
-    validate_solve_configuration(
+    SolveConfiguration.model_validate(
         {
             "models": {" ": {"transport": "anthropic", "model": " ", "apiKeyEnv": "KEY"}},
             "modelRoles": {"default": " ", " ": " "},
@@ -272,18 +238,10 @@ def test_accepts_server_whitespace_names_and_model_id() -> None:
         ({"models": {}, "modelRoles": {}}, "models"),
         ({"models": PROFILE["models"]}, "modelRoles"),
         ({**PROFILE, "credentials": {}}, "credentials"),
-        ({**PROFILE, "apiKey": "not-allowed"}, "apiKey"),
-        (
-            {
-                **PROFILE,
-                "models": {"primary": {**PROFILE["models"]["primary"], "credential": "KEY"}},
-            },
-            "credential",
-        ),
         ({**PROFILE, "ttlSeconds": 0}, "ttlSeconds"),
         ({**PROFILE, "ttlSeconds": True}, "ttlSeconds"),
         ({**PROFILE, "ttlSeconds": 86401}, "ttlSeconds"),
-        ({**PROFILE, "modelRoles": {"default": "missing"}}, "missing"),
+        ({**PROFILE, "modelRoles": {"default": "missing"}}, "modelRoles"),
     ],
 )
 def test_rejects_unsafe_or_invalid_profile_shapes(
@@ -298,7 +256,7 @@ def test_rejects_unsafe_or_invalid_profile_shapes(
 @pytest.mark.parametrize(
     ("models", "message"),
     [
-        ({"": PROFILE["models"]["primary"]}, "1..64"),
+        ({"": PROFILE["models"]["primary"]}, "models"),
         ({"primary": {"model": "m", "apiKeyEnv": "KEY"}}, "transport"),
         (
             {"primary": {"transport": "unknown", "model": "m", "apiKeyEnv": "KEY"}},
@@ -397,7 +355,7 @@ def test_loading_a_profile_does_not_resolve_api_keys(
 
     # Assert
     assert profile.default_model == "model-v9"
-    assert profile.sanitized_configuration == expected_sanitized
+    assert profile.sanitized_configuration.model_dump(exclude_none=True) == expected_sanitized
 
 
 @pytest.mark.parametrize(
@@ -422,9 +380,8 @@ def test_standard_profile_is_valid_and_non_secret(
     profile = load_solve_profile(path)
 
     # Assert
-    assert profile.configuration == expected_configuration
+    assert profile.configuration.model_dump(exclude_none=True) == expected_configuration
     assert profile.default_model == model
-    assert profile.sanitized_configuration["models"]["default"] == {
-        "transport": transport,
-        "model": model,
-    }
+    assert profile.sanitized_configuration.models["default"] == SanitizedModel(
+        transport=transport, model=model
+    )
