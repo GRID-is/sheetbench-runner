@@ -46,7 +46,10 @@ async def handle_http_errors(operation: str) -> AsyncIterator[None]:
             raise RetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
         raise NonRetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
     except (httpx.NetworkError, httpx.RemoteProtocolError, httpx.TimeoutException) as e:
-        raise RetryableSolveError(f"Connection error: {e}") from e
+        cause = e.__cause__ or e.__context__
+        detail = f": {e}" if str(e) else ""
+        caused_by = f" (caused by {type(cause).__name__}: {cause})" if cause else ""
+        raise RetryableSolveError(f"Connection error: {type(e).__name__}{detail}{caused_by}") from e
 
 
 class UploadResponse(BaseModel):
