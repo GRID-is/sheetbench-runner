@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, AsyncIterator, Literal, Mapping, Self
+from typing import Annotated, Any, AsyncIterator, Mapping, Self
 
 import httpx
 from pydantic import Base64Bytes, BaseModel, ConfigDict, Field
@@ -79,35 +79,14 @@ class UploadResponse(BaseModel):
     sheets: list[str]
 
 
-class SolveMessage(BaseModel):
-    """One message of a solve choice."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    role: str
-    content: str
-
-
-class SolveChoice(BaseModel):
-    """One completion choice of a solve response."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    index: int
-    message: SolveMessage
-    finish_reason: str
-
-
 class SolveResponseBody(BaseModel):
     """Body of a successful /solve response."""
 
     model_config = ConfigDict(extra="ignore")
 
     id: str
-    object: Literal["solve.completion"]
     model: str
     workbookId: str
-    choices: list[SolveChoice]
     usage: SolveUsage
     output_xlsx_base64: Base64Bytes | None = None
     transcript: dict[str, Any]
@@ -337,8 +316,6 @@ class SolveClient:
             body = SolveResponseBody.model_validate(response.json())
         except ValueError as e:
             raise NonRetryableSolveError("Invalid solve response") from e
-        if body.workbookId != workbook_id:
-            raise NonRetryableSolveError("Invalid solve response")
         return SolveResponse(
             id=body.id,
             model=body.model,

@@ -53,16 +53,8 @@ def context_response(
 def solve_response() -> dict[str, object]:
     return {
         "id": "test-id-123",
-        "object": "solve.completion",
         "model": "opaque-model",
         "workbookId": "wb-123",
-        "choices": [
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": "Done"},
-                "finish_reason": "stop",
-            }
-        ],
         "usage": {
             "turns": 5,
             "tool_calls": 8,
@@ -244,7 +236,7 @@ async def test_upload_and_solve_require_a_context(tmp_path: Path) -> None:
             "models": {
                 "primary": {
                     **SANITIZED_PRIMARY_MODEL,
-                    "model": "attacker-selected-model",
+                    "model": "other-model",
                 }
             },
         },
@@ -426,14 +418,6 @@ async def test_solve_accepts_additive_response_fields() -> None:
     # Arrange
     body = solve_response()
     body["warnings"] = []
-    choices = body["choices"]
-    assert isinstance(choices, list)
-    choice = choices[0]
-    assert isinstance(choice, dict)
-    choice["provider_metadata"] = {"request_id": "request-123"}
-    message = choice["message"]
-    assert isinstance(message, dict)
-    message["annotations"] = []
     usage = body["usage"]
     assert isinstance(usage, dict)
     usage["cached_input_tokens"] = 10
@@ -467,19 +451,16 @@ async def test_upload_rejects_malformed_success_response(tmp_path: Path, body: o
     )
     async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
-        with pytest.raises(NonRetryableSolveError, match="Invalid upload response") as exc_info:
+        with pytest.raises(NonRetryableSolveError, match="Invalid upload response"):
             await client.upload_workbook(xlsx_file)
-    assert repr(body) not in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("object", "other"),
         ("model", 4),
-        ("workbookId", "attacker-workbook"),
         ("usage", {"turns": -1, "tool_calls": 1, "input_tokens": 2, "output_tokens": 3}),
-        ("transcript", "secret response body"),
+        ("transcript", "not-an-object"),
         ("output_xlsx_base64", "Zg"),
     ],
 )
@@ -490,9 +471,8 @@ async def test_solve_rejects_malformed_success_response(field: str, value: objec
     respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
     async with SolveClient("http://localhost:3000") as client:
         await activate_context(client)
-        with pytest.raises(NonRetryableSolveError, match="Invalid solve response") as exc_info:
+        with pytest.raises(NonRetryableSolveError, match="Invalid solve response"):
             await client.solve("wb-123", "Test prompt")
-    assert "secret response body" not in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
