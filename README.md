@@ -211,30 +211,13 @@ runner compares against the profile on resume. A pure `--reevaluate` run makes
 no server requests, does not require a solve profile, and does not rewrite
 `run.json`.
 
-### Released legacy runs
-
-Released `sheetbench-runner` master wrote `run.json` with a top-level `model`
-and an `infuser_config` object. To continue such a run, supply a solve profile.
-Supplying the profile is the adoption mechanism; there is no separate flag.
-The runner compares only the recorded top-level `model` with the profile's
-default model. It does not read or compare the historical transport: the
-selected profile defines the current transport and is validated exactly like a
-new run. If the recorded model differs or is absent, the run fails before any
-context is created. After the new context is created and validated, the runner
-rewrites `run.json` to schema version 2 in one atomic replace.
-
-Canonical `run.json` has an explicit `schema_version` of 2 and the keys `model`,
-`git_hash`, `solve_configuration`, `test_set`, `notes`, and `created_at`. A
-`run.json` that holds both `infuser_config` and `solve_configuration`, or that
-holds malformed canonical metadata, fails the run before any server request.
-
 ## Output
 
 A run directory contains:
 
 ```
 run-dir/
-├── run.json                  # Run metadata (schema 2: model, solve_configuration, ...)
+├── run.json                  # Run metadata
 ├── results.json              # Task results sorted by task_id
 ├── run.log                   # Execution log
 ├── 13-1-output.xlsx          # Output workbook for task 13-1
