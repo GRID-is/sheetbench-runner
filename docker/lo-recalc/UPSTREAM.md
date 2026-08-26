@@ -1,6 +1,6 @@
 # Vendored file provenance
 
-`open_spreadsheet.py` is a byte-identical copy of
+`open_spreadsheet.py` is a copy of
 `evaluation/open_spreadsheet.py` from
 https://github.com/RUCKBReasoning/SpreadsheetBench-2
 at commit d83edf90d891a1f873f04b92152503a57717496a (2026-06-29).
