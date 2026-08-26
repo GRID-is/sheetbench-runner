@@ -17,10 +17,14 @@ class SolveError(Exception):
 
 class RetryableSolveError(SolveError):
     """
-    Transient error that should trigger a retry on resume.
+    Transient error that should trigger a retry.
 
-    This includes 5xx errors, timeouts, and connection failures.
+    This includes 5xx errors and connection failures.
     """
+
+
+class SolveTimeoutError(SolveError):
+    """The server did not answer within the client timeout; the task is recorded as failed."""
 
 
 class NonRetryableSolveError(SolveError):
@@ -45,7 +49,9 @@ async def handle_http_errors(operation: str) -> AsyncIterator[None]:
         if e.response.status_code >= 500:
             raise RetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
         raise NonRetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
-    except (httpx.NetworkError, httpx.RemoteProtocolError, httpx.TimeoutException) as e:
+    except httpx.TimeoutException as e:
+        raise SolveTimeoutError(f"{operation} timed out: {type(e).__name__}") from e
+    except (httpx.NetworkError, httpx.RemoteProtocolError) as e:
         cause = e.__cause__ or e.__context__
         detail = f": {e}" if str(e) else ""
         caused_by = f" (caused by {type(cause).__name__}: {cause})" if cause else ""

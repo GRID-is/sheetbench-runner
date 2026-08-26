@@ -11,11 +11,14 @@ import httpx
 import pytest
 import respx
 
+from sheetbench_runner import runner as runner_module
 from sheetbench_runner.entities import EvaluationResult, SolveUsage, Task
 from sheetbench_runner.run_directory import RunDirectory, RunMetadataError
 from sheetbench_runner.runner import RunStats, TaskRunner, run
 from sheetbench_runner.solve_client import (
+    RetryableSolveError,
     SolveResponse,
+    SolveTimeoutError,
 )
 from sheetbench_runner.solve_profile import SolveProfileError
 
@@ -577,3 +580,97 @@ async def test_results_row_records_the_input_workbook_relative_to_the_dataset(
     [row] = json.loads((run_path / "results.json").read_text())
     assert row["input_file"] == "spreadsheet/01_bond_accounting/01_01_input.xlsx"
     assert row["output_file"] == "01_01-output.xlsx"
+
+
+def solved(workbook_id: str = "wb-123") -> SolveResponse:
+    return SolveResponse(
+        id=f"solve-{workbook_id}",
+        model="opaque-model",
+        workbook_id=workbook_id,
+        usage=SolveUsage(turns=1, tool_calls=0, input_tokens=2, output_tokens=3),
+        output_xlsx=base64.b64encode(b"output"),
+        transcript={"messages": []},
+    )
+
+
+def runner_with(
+    tmp_path: Path, solve_side_effect: list[object], upload_ids: list[str]
+) -> tuple[TaskRunner, Path, Mock]:
+    run_path = tmp_path / "run"
+    run_path.mkdir()
+    input_path = tmp_path / "input.xlsx"
+    input_path.write_bytes(b"input")
+    solve_client = Mock()
+    solve_client.upload_workbook = AsyncMock(side_effect=upload_ids)
+    solve_client.solve = AsyncMock(side_effect=solve_side_effect)
+    dataset = Mock()
+    dataset.get_input_path.return_value = input_path
+    evaluator = Mock()
+    evaluator.evaluate.return_value = EvaluationResult(passed=True)
+    runner = TaskRunner(
+        solve_client=solve_client,
+        evaluator=evaluator,
+        dataset=dataset,
+        run_dir=RunDirectory(run_path),
+    )
+    return runner, run_path, solve_client
+
+
+async def test_a_connection_error_is_retried_with_a_fresh_upload(
+    tmp_path: Path, sample_task: Task, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange
+    monkeypatch.setattr(runner_module, "TRANSIENT_RETRY_WAIT_SECONDS", 0)
+    runner, run_path, solve_client = runner_with(
+        tmp_path,
+        [RetryableSolveError("Connection error: ReadError"), solved("wb-2")],
+        ["wb-1", "wb-2"],
+    )
+
+    # Act
+    stats = await runner.run_all([sample_task])
+
+    # Assert
+    assert solve_client.upload_workbook.await_count == 2
+    assert solve_client.solve.await_args_list[1].args[0] == "wb-2"
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert row["result"] == "pass"
+    assert stats.errors == 0
+
+
+async def test_connection_errors_on_every_attempt_leave_the_task_unrecorded(
+    tmp_path: Path, sample_task: Task, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange
+    monkeypatch.setattr(runner_module, "TRANSIENT_RETRY_WAIT_SECONDS", 0)
+    runner, run_path, solve_client = runner_with(
+        tmp_path,
+        [RetryableSolveError("Connection error: ReadError")] * 3,
+        ["wb-1", "wb-2", "wb-3"],
+    )
+
+    # Act
+    stats = await runner.run_all([sample_task])
+
+    # Assert
+    assert solve_client.upload_workbook.await_count == 3
+    assert not (run_path / "results.json").exists()
+    assert stats.errors == 1
+
+
+async def test_a_timeout_is_recorded_once_as_a_failure(tmp_path: Path, sample_task: Task) -> None:
+    # Arrange
+    runner, run_path, solve_client = runner_with(
+        tmp_path, [SolveTimeoutError("Solve timed out: ReadTimeout")], ["wb-1"]
+    )
+
+    # Act
+    stats = await runner.run_all([sample_task])
+
+    # Assert
+    assert solve_client.upload_workbook.await_count == 1
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert row["result"] == "fail"
+    assert row["message"] == "Solve timed out: ReadTimeout"
+    assert "output_file" not in row
+    assert stats.failed == 1
