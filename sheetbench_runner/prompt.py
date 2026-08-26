@@ -34,6 +34,32 @@ Below is the spreadsheet manipulation question you need to solve:
 {answer_position}
 """
 
+# v2 datasets (Debugging, Financial_Model, Template) carry no instruction_type, so
+# both its field description and its section are dropped. The answer_position
+# description loses the per-type wording but keeps the scope constraint, which is
+# the part that actually bounds what the agent may touch. Kept as a whole literal
+# rather than assembled from fragments so the text the agent sees stays readable
+# and the v1 template above stays byte-identical to the reference benchmark.
+PROMPT_TEMPLATE_WITHOUT_INSTRUCTION_TYPE = """You are a spreadsheet expert.
+
+You need to solve the given spreadsheet manipulation question, which contains the following \
+types of information:
+- instruction: The question about spreadsheet manipulation.
+- workbook_id: The ID of the workbook that has been uploaded.
+- answer_position: The maximum range of cells you need to modify or fill. You only need to \
+modify or fill in values within the cell range specified by answer_position.
+
+Below is the spreadsheet manipulation question you need to solve:
+### instruction
+{instruction}
+
+### workbook_id
+{workbook_id}
+
+### answer_position
+{answer_position}
+"""
+
 
 def build_prompt(task: Task, workbook_id: str) -> str:
     """
@@ -51,6 +77,13 @@ def build_prompt(task: Task, workbook_id: str) -> str:
     """
     if not workbook_id or not workbook_id.strip():
         raise ValueError("workbook_id cannot be empty")
+
+    if task.instruction_type is None:
+        return PROMPT_TEMPLATE_WITHOUT_INSTRUCTION_TYPE.format(
+            instruction=task.instruction,
+            workbook_id=workbook_id,
+            answer_position=task.answer_position,
+        )
 
     return PROMPT_TEMPLATE.format(
         instruction=task.instruction,

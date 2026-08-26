@@ -238,3 +238,42 @@ def test_create_preserves_existing_results(temp_dir: Path):
     assert len(results) == 2
     assert results[0]["task_id"] == "13-1"
     assert results[1]["task_id"] == "17-35"
+
+
+class TestDatasetBinding:
+    """Run dirs record their dataset; regrades must not silently mix categories."""
+
+    def test_metadata_round_trips_dataset_path(self):
+        m = RunMetadata(
+            model="m",
+            git_hash="g",
+            infuser_config={},
+            dataset_path="../SpreadsheetBench/data/spreadsheetbench-v2/Template",
+        )
+        d = m.to_dict()
+        assert d["dataset_path"].endswith("Template")
+        assert RunMetadata.from_dict(d).dataset_path == m.dataset_path
+
+    def test_metadata_dataset_path_optional_for_legacy_runs(self):
+        m = RunMetadata.from_dict({"model": "m", "git_hash": "g", "infuser_config": {}})
+        assert m.dataset_path is None
+
+    def test_binding_check_accepts_match_and_legacy(self, tmp_path):
+        from sheetbench_runner.runner import check_dataset_binding
+
+        d = tmp_path / "Financial_Model"
+        d.mkdir()
+        check_dataset_binding(str(d), d)  # exact match ok
+        check_dataset_binding(None, d)  # legacy run.json without field ok
+
+    def test_binding_check_rejects_mismatch(self, tmp_path):
+        import pytest
+
+        from sheetbench_runner.runner import check_dataset_binding
+
+        a = tmp_path / "Financial_Model"
+        b = tmp_path / "Template"
+        a.mkdir()
+        b.mkdir()
+        with pytest.raises(ValueError, match="Template"):
+            check_dataset_binding(str(a), b)

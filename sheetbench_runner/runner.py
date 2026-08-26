@@ -37,6 +37,8 @@ class RunStats:
     errors: int = 0  # Transient errors (will retry)
     skipped: int = 0  # Already completed in previous run
     running_tasks: set[str] = field(default_factory=set)
+    regression_accuracies: list[float] = field(default_factory=list)
+    modification_accuracies: list[float] = field(default_factory=list)
 
     @property
     def pass_rate(self) -> float:
@@ -195,6 +197,10 @@ class TaskRunner:
                         self._stats.passed += 1
                     elif result.get("result") == "fail":
                         self._stats.failed += 1
+                    if result.get("regression_accuracy") is not None:
+                        self._stats.regression_accuracies.append(result["regression_accuracy"])
+                    if result.get("modification_accuracy") is not None:
+                        self._stats.modification_accuracies.append(result["modification_accuracy"])
 
         # Count completed = passed + failed
         self._stats.completed = self._stats.passed + self._stats.failed
@@ -227,13 +233,23 @@ class TaskRunner:
         if self._live:
             self._live.update(self._build_display())
 
-    def _task_completed(self, task_id: str, passed: bool | None) -> None:
+    def _task_completed(
+        self,
+        task_id: str,
+        passed: bool | None,
+        regression_accuracy: float | None = None,
+        modification_accuracy: float | None = None,
+    ) -> None:
         """Update stats and display when a task completes."""
         self._stats.running_tasks.discard(task_id)
         if passed is True:
             self._stats.passed += 1
         elif passed is False:
             self._stats.failed += 1
+        if regression_accuracy is not None:
+            self._stats.regression_accuracies.append(regression_accuracy)
+        if modification_accuracy is not None:
+            self._stats.modification_accuracies.append(modification_accuracy)
         # Update progress bar
         if self._progress and self._progress_task is not None:
             self._progress.advance(self._progress_task)
@@ -311,14 +327,30 @@ class TaskRunner:
                 eval_result = self._evaluator.evaluate(task, self._run_dir.path / output_file)
                 result.result = "pass" if eval_result.passed else "fail"
                 result.message = eval_result.message
+                result.regression_accuracy = eval_result.regression_accuracy
+                result.modification_accuracy = eval_result.modification_accuracy
                 result.status = TaskStatus.EVALUATED
 
                 status_str = "PASS" if eval_result.passed else "FAIL"
-                logger.debug(f"Task {task.id}: {status_str} ({duration:.1f}s)")
+                ratios = ""
+                if (
+                    eval_result.regression_accuracy is not None
+                    and eval_result.modification_accuracy is not None
+                ):
+                    ratios = (
+                        f", reg={eval_result.regression_accuracy:.4f}"
+                        f", mod={eval_result.modification_accuracy:.4f}"
+                    )
+                logger.debug(f"Task {task.id}: {status_str} ({duration:.1f}s{ratios})")
 
                 # Record result - only for actually evaluated tasks
                 self._run_dir.record_result(result)
-                self._task_completed(task.id, passed=eval_result.passed)
+                self._task_completed(
+                    task.id,
+                    passed=eval_result.passed,
+                    regression_accuracy=eval_result.regression_accuracy,
+                    modification_accuracy=eval_result.modification_accuracy,
+                )
                 return result
 
             except InfuserTransientError as e:
@@ -330,6 +362,23 @@ class TaskRunner:
                 # Don't record - should be retried on resume
                 self._task_completed(task.id, passed=None)
                 return result
+
+
+def check_dataset_binding(recorded: str | None, requested: Path) -> None:
+    """
+    Refuse to grade a run directory against a different dataset than the one
+    it was created with. Task ids overlap across v2 categories, so a wrong
+    dataset silently grades outputs against the wrong goldens. Legacy run
+    dirs (no recorded dataset) are accepted.
+    """
+    if recorded is None:
+        return
+    if Path(recorded).resolve() != requested.resolve():
+        raise ValueError(
+            f"Run directory was created for dataset {recorded!r} but "
+            f"{str(requested)!r} was passed; refusing to grade against a "
+            "different dataset."
+        )
 
 
 async def run(
@@ -387,8 +436,13 @@ async def run(
             git_hash=git_hash,
             infuser_config=status,
             notes=run_dir_path.name,
+            dataset_path=str(dataset_path.resolve()),
         )
         run_dir.create(metadata)
+
+    existing_metadata = run_dir.load_metadata()
+    if existing_metadata is not None:
+        check_dataset_binding(existing_metadata.dataset_path, dataset_path)
 
     # Always load existing results (for resume)
     run_dir.load()
@@ -424,6 +478,14 @@ async def run(
             # Update the result in place
             existing["result"] = new_result
             existing["message"] = eval_result.message
+            if eval_result.regression_accuracy is not None:
+                existing["regression_accuracy"] = eval_result.regression_accuracy
+            else:
+                existing.pop("regression_accuracy", None)
+            if eval_result.modification_accuracy is not None:
+                existing["modification_accuracy"] = eval_result.modification_accuracy
+            else:
+                existing.pop("modification_accuracy", None)
             reevaluated += 1
 
         if reevaluated > 0:

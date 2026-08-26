@@ -53,12 +53,8 @@ class Dataset:
 
     def get_input_path(self, task: Task) -> Path:
         """Get the path to the input spreadsheet for a task."""
-        # verified_400 uses _init.xlsx naming: 1_{task_id}_init.xlsx
-        filename = f"1_{task.id}_init.xlsx"
-        return self.dataset_path / task.spreadsheet_path / filename
+        return self.dataset_path / task.input_relpath
 
     def get_golden_path(self, task: Task) -> Path:
         """Get the path to the golden (expected) spreadsheet for a task."""
-        # Golden files: spreadsheet/{task_id}/1_{task_id}_golden.xlsx
-        filename = f"1_{task.id}_golden.xlsx"
-        return self.dataset_path / "spreadsheet" / task.id / filename
+        return self.dataset_path / task.golden_relpath

@@ -25,15 +25,30 @@ class InstructionType(StrEnum):
 
 @dataclass(frozen=True)
 class Task:
-    """A task from the SpreadsheetBench dataset."""
+    """
+    A task from a SpreadsheetBench dataset.
+
+    Two dataset layouts are supported:
+
+    - v1 (``spreadsheetbench_verified_400``): ``spreadsheet_path`` is a directory
+      and the input/golden filenames are derived from the task id. Carries
+      ``instruction_type``, ``answer_sheet`` and ``data_position``.
+    - v2 (``Debugging``, ``Financial_Model``, ``Template``): ``spreadsheet_path``
+      points straight at the input workbook and ``golden_response_path`` names the
+      golden file (possibly shared between tasks). The three v1-only fields are
+      absent, and ``answer_position`` is always fully sheet-qualified.
+
+    A present ``golden_response_path`` marks a task as v2.
+    """
 
     id: str
     instruction: str
     spreadsheet_path: str
-    instruction_type: str
     answer_position: str
+    instruction_type: str | None = None
     answer_sheet: str | None = None
     data_position: str | None = None
+    golden_response_path: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Task":
@@ -42,11 +57,30 @@ class Task:
             id=str(data["id"]),
             instruction=data["instruction"],
             spreadsheet_path=data["spreadsheet_path"],
-            instruction_type=data["instruction_type"],
             answer_position=data["answer_position"],
+            instruction_type=data.get("instruction_type"),
             answer_sheet=data.get("answer_sheet"),
             data_position=data.get("data_position"),
+            golden_response_path=data.get("golden_response_path"),
         )
+
+    @property
+    def input_relpath(self) -> str:
+        """Path of the input workbook, relative to the dataset directory."""
+        if self.golden_response_path is not None:
+            # v2: spreadsheet_path is the input workbook itself
+            return self.spreadsheet_path
+        # v1 uses _init.xlsx naming under a per-task directory
+        return f"{self.spreadsheet_path}/1_{self.id}_init.xlsx"
+
+    @property
+    def golden_relpath(self) -> str:
+        """Path of the golden workbook, relative to the dataset directory."""
+        if self.golden_response_path is not None:
+            # v2 names the golden explicitly; several tasks may share one
+            return self.golden_response_path
+        # v1 golden files: spreadsheet/{task_id}/1_{task_id}_golden.xlsx
+        return f"spreadsheet/{self.id}/1_{self.id}_golden.xlsx"
 
 
 @dataclass(frozen=True)
@@ -74,10 +108,16 @@ class InfuserUsage:
 
 @dataclass(frozen=True)
 class EvaluationResult:
-    """Result of evaluating a task output against the golden file."""
+    """Result of evaluating a task output against the golden file.
+
+    regression_accuracy/modification_accuracy are set only by the v2 grader
+    (None on the v1 path).
+    """
 
     passed: bool
     message: str = ""
+    regression_accuracy: float | None = None
+    modification_accuracy: float | None = None
 
 
 @dataclass
@@ -99,6 +139,8 @@ class TaskResult:
     output_file: str | None = None
     result: str | None = None  # "pass" | "fail"
     message: str = ""
+    regression_accuracy: float | None = None
+    modification_accuracy: float | None = None
     error: str | None = None  # For transient failures (not recorded to results.json)
     started_at: datetime | None = field(default=None, repr=False)
 
@@ -120,6 +162,10 @@ class TaskResult:
             d["result"] = self.result
         if self.message:
             d["message"] = self.message
+        if self.regression_accuracy is not None:
+            d["regression_accuracy"] = self.regression_accuracy
+        if self.modification_accuracy is not None:
+            d["modification_accuracy"] = self.modification_accuracy
         # Note: error field is intentionally NOT included - transient failures
         # should not be recorded so they get retried on resume
         return d
@@ -134,6 +180,10 @@ class RunMetadata:
     infuser_config: dict[str, Any]
     test_set: int | None = None
     notes: str = ""
+    # Dataset directory this run was created against. Task ids overlap across
+    # v2 categories, so regrading against the wrong dataset silently grades
+    # against the wrong goldens; recording the binding lets tooling validate.
+    dataset_path: str | None = None
     created_at: datetime = field(default_factory=datetime.now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -144,6 +194,7 @@ class RunMetadata:
             "infuser_config": self.infuser_config,
             "test_set": self.test_set,
             "notes": self.notes,
+            "dataset_path": self.dataset_path,
             "created_at": self.created_at.isoformat(),
         }
 
@@ -161,5 +212,6 @@ class RunMetadata:
             infuser_config=data.get("infuser_config", {}),
             test_set=data.get("test_set"),
             notes=data.get("notes", ""),
+            dataset_path=data.get("dataset_path"),
             created_at=created_at,
         )
