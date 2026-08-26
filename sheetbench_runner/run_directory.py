@@ -26,6 +26,7 @@ class LegacyRunMetadata(BaseModel):
     git_hash: str = "unknown"
     test_set: int | None = None
     notes: str = ""
+    dataset_path: str | None = None
     created_at: datetime = Field(default_factory=datetime.now)
 
     @field_validator("model", mode="before")
@@ -49,6 +50,11 @@ class LegacyRunMetadata(BaseModel):
     @classmethod
     def _textual_notes(cls, value: object) -> object:
         return value if isinstance(value, str) else ""
+
+    @field_validator("dataset_path", mode="before")
+    @classmethod
+    def _textual_dataset_path(cls, value: object) -> object:
+        return value if isinstance(value, str) and value else None
 
     @field_validator("created_at", mode="before")
     @classmethod

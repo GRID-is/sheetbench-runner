@@ -439,6 +439,7 @@ async def test_released_run_is_migrated_to_canonical_metadata_after_context_crea
         "solve_configuration": SANITIZED_CONFIGURATION,
         "test_set": 1,
         "notes": "released run",
+        "dataset_path": None,
         "created_at": "2026-01-02T03:04:05",
     }
 

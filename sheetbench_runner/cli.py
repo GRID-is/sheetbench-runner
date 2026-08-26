@@ -149,16 +149,20 @@ async def cli(
     logger.info(f"Selected {len(tasks)} tasks")
 
     # Run
-    stats = await run(
-        dataset_path=dataset,
-        run_dir_path=run_dir,
-        solve_server_url=cfg.solve_server_url,
-        solve_profile_path=cfg.solve_profile,
-        tasks=tasks,
-        concurrency=cfg.concurrency,
-        timeout_seconds=cfg.timeout_seconds,
-        reevaluate=reevaluate,
-    )
+    try:
+        stats = await run(
+            dataset_path=dataset,
+            run_dir_path=run_dir,
+            solve_server_url=cfg.solve_server_url,
+            solve_profile_path=cfg.solve_profile,
+            tasks=tasks,
+            concurrency=cfg.concurrency,
+            timeout_seconds=cfg.timeout_seconds,
+            reevaluate=reevaluate,
+        )
+    except ValueError as e:
+        logger.error(str(e))
+        sys.exit(1)
 
     # Print summary
     print("\n" + "=" * 50)
@@ -171,6 +175,11 @@ async def cli(
         evaluated = stats.passed + stats.failed
         print(f"  Passed:     {stats.passed} ({100 * stats.passed / evaluated:.1f}%)")
         print(f"  Failed:     {stats.failed} ({100 * stats.failed / evaluated:.1f}%)")
+        if stats.regression_accuracies and stats.modification_accuracies:
+            avg_reg = sum(stats.regression_accuracies) / len(stats.regression_accuracies)
+            avg_mod = sum(stats.modification_accuracies) / len(stats.modification_accuracies)
+            print(f"  Avg regression accuracy:   {avg_reg:.4f}")
+            print(f"  Avg modification accuracy: {avg_mod:.4f}")
     if stats.errors:
         print(f"Errors:       {stats.errors} (will retry on resume)")
     print(f"\nResults: {run_dir}")

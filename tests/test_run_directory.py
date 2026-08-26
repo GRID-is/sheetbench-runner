@@ -14,6 +14,7 @@ from sheetbench_runner.run_directory import (
     RunDirectory,
     RunMetadataError,
 )
+from sheetbench_runner.runner import check_dataset_binding
 
 SOLVE_CONFIGURATION: dict[str, Any] = {
     "models": {"default": {"transport": "anthropic", "model": "claude-sonnet-5", "options": None}},
@@ -64,6 +65,7 @@ def test_create_new_run_directory(temp_dir: Path):
         "solve_configuration": SOLVE_CONFIGURATION,
         "test_set": 1,
         "notes": "Test run",
+        "dataset_path": None,
         "created_at": metadata.created_at.isoformat(),
     }
 
@@ -573,6 +575,7 @@ def test_migrating_released_metadata_preserves_history(temp_dir: Path) -> None:
         "solve_configuration": SOLVE_CONFIGURATION,
         "test_set": 1,
         "notes": "released run",
+        "dataset_path": None,
         "created_at": "2026-01-02T03:04:05",
     }
     assert run_dir.read_metadata() == migrated
@@ -600,3 +603,58 @@ def test_failed_metadata_write_leaves_the_original_document_intact(
         run_dir.write_metadata(metadata)
     assert (run_path / "run.json").read_text() == original
     assert not list(run_path.glob("*.tmp"))
+
+
+def test_metadata_round_trips_dataset_path() -> None:
+    # Arrange
+    metadata = RunMetadata(
+        model="m",
+        git_hash="g",
+        solve_configuration=SOLVE_CONFIGURATION,
+        dataset_path="../SpreadsheetBench/data/spreadsheetbench-v2/Template",
+    )
+
+    # Act
+    document = metadata.model_dump(mode="json")
+
+    # Assert
+    assert document["dataset_path"].endswith("Template")
+    assert RunMetadata.model_validate(document).dataset_path == metadata.dataset_path
+
+
+def test_migrating_released_metadata_without_dataset_path_records_none(temp_dir: Path) -> None:
+    # Arrange
+    run_path = temp_dir / "unbound-run"
+    run_path.mkdir()
+    (run_path / "run.json").write_text(json.dumps(RELEASED_RUN_JSON))
+    run_dir = RunDirectory(run_path)
+    legacy = run_dir.read_metadata()
+    assert isinstance(legacy, LegacyRunMetadata)
+
+    # Act
+    migrated = run_dir.migrate_released_metadata(legacy, SOLVE_CONFIGURATION)
+
+    # Assert
+    assert migrated.dataset_path is None
+
+
+def test_binding_check_accepts_match_and_legacy(tmp_path: Path) -> None:
+    # Arrange
+    dataset = tmp_path / "Financial_Model"
+    dataset.mkdir()
+
+    # Act / Assert
+    check_dataset_binding(str(dataset), dataset)
+    check_dataset_binding(None, dataset)
+
+
+def test_binding_check_rejects_mismatch(tmp_path: Path) -> None:
+    # Arrange
+    recorded = tmp_path / "Financial_Model"
+    requested = tmp_path / "Template"
+    recorded.mkdir()
+    requested.mkdir()
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="Template"):
+        check_dataset_binding(str(recorded), requested)
