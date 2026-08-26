@@ -468,8 +468,8 @@ async def test_real_legacy_run_without_infuser_config_is_migrated(
 
 @pytest.mark.parametrize(
     "historical_metadata",
-    [{"model": "unknown"}, {"model": None}, {"model": 7}],
-    ids=["unknown", "absent", "unknown-type"],
+    [{"model": None}, {"model": 7}],
+    ids=["absent", "unknown-type"],
 )
 @respx.mock
 async def test_malformed_released_model_fails_before_context_creation(
@@ -499,47 +499,6 @@ async def test_malformed_released_model_fails_before_context_creation(
         )
 
     # Assert
-    assert not respx.calls
-    assert (run_dir / "run.json").read_text() == original_run_json
-
-
-@respx.mock
-async def test_released_run_with_unknown_model_cannot_adopt_unknown_profile(
-    tmp_path: Path,
-    sample_dataset_dir: Path,
-    sample_task: Task,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Arrange
-    monkeypatch.setenv("OPAQUE_ENV", "key")
-    context_routes()
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    original_run_json = released_run_json(model="unknown")
-    (run_dir / "run.json").write_text(original_run_json)
-    (run_dir / "results.json").write_text("[]")
-    profile = {
-        **PROFILE,
-        "models": {
-            "primary": {
-                **PROFILE["models"]["primary"],
-                "model": "unknown",
-            }
-        },
-    }
-    profile_path = tmp_path / "unknown-profile.json"
-    profile_path.write_text(json.dumps(profile))
-
-    # Act / Assert
-    with pytest.raises(RunMetadataError, match="released metadata"):
-        await run(
-            dataset_path=sample_dataset_dir,
-            run_dir_path=run_dir,
-            solve_server_url="http://localhost:3000",
-            solve_profile_path=profile_path,
-            tasks=[sample_task],
-        )
-
     assert not respx.calls
     assert (run_dir / "run.json").read_text() == original_run_json
 

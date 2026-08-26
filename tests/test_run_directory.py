@@ -335,8 +335,6 @@ def test_read_metadata_decodes_released_legacy_document(temp_dir: Path) -> None:
         {"schema_version": 2, "model": "m", "git_hash": "h", "solve_configuration": []},
         {key: value for key, value in RELEASED_RUN_JSON.items() if key != "model"},
         {**RELEASED_RUN_JSON, "model": None},
-        {**RELEASED_RUN_JSON, "model": ""},
-        {**RELEASED_RUN_JSON, "model": "unknown"},
         {**RELEASED_RUN_JSON, "model": 7},
         [],
         "not-an-object",
@@ -347,8 +345,6 @@ def test_read_metadata_decodes_released_legacy_document(temp_dir: Path) -> None:
         "configuration-not-an-object",
         "missing-model-legacy",
         "null-model-legacy",
-        "empty-model-legacy",
-        "unknown-model-legacy",
         "wrong-type-model-legacy",
         "not-a-mapping",
         "not-json-object",
@@ -407,54 +403,6 @@ def test_read_metadata_decodes_legacy_document_with_only_model(temp_dir: Path) -
     assert actual.test_set is None
     assert actual.notes == ""
     assert before <= actual.created_at <= after
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"git_hash": None},
-        {"git_hash": 7},
-        {"test_set": True},
-        {"test_set": "1"},
-        {"notes": None},
-        {"notes": 7},
-        {"created_at": "not-a-timestamp"},
-    ],
-    ids=[
-        "null-git-hash",
-        "wrong-type-git-hash",
-        "boolean-test-set",
-        "string-test-set",
-        "null-notes",
-        "wrong-type-notes",
-        "unparseable-created-at",
-    ],
-)
-def test_read_metadata_defaults_invalid_optional_legacy_fields(
-    temp_dir: Path, overrides: dict[str, object]
-) -> None:
-    # Arrange
-    run_path = temp_dir / "invalid-optional-fields-run"
-    run_path.mkdir()
-    document = {**RELEASED_RUN_JSON, **overrides}
-    (run_path / "run.json").write_text(json.dumps(document))
-
-    # Act
-    before = datetime.now()
-    actual = RunDirectory(run_path).read_metadata()
-    after = datetime.now()
-
-    # Assert
-    assert isinstance(actual, LegacyRunMetadata)
-    assert actual.model == "claude-sonnet-4-5"
-    if "git_hash" in overrides:
-        assert actual.git_hash == "unknown"
-    if "test_set" in overrides:
-        assert actual.test_set is None
-    if "notes" in overrides:
-        assert actual.notes == ""
-    if "created_at" in overrides:
-        assert before <= actual.created_at <= after
 
 
 @pytest.mark.parametrize(

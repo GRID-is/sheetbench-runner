@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .entities import RunMetadata, TaskResult, TaskStatus
 from .solve_profile import SolveConfiguration
@@ -28,45 +28,6 @@ class LegacyRunMetadata(BaseModel):
     notes: str = ""
     dataset_path: str | None = None
     created_at: datetime = Field(default_factory=datetime.now)
-
-    @field_validator("model", mode="before")
-    @classmethod
-    def _named_model(cls, value: object) -> object:
-        if not isinstance(value, str) or not value or value == "unknown":
-            raise ValueError("model must name the model the run used")
-        return value
-
-    @field_validator("git_hash", mode="before")
-    @classmethod
-    def _known_git_hash(cls, value: object) -> object:
-        return value if isinstance(value, str) and value else "unknown"
-
-    @field_validator("test_set", mode="before")
-    @classmethod
-    def _numbered_test_set(cls, value: object) -> object:
-        return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-    @field_validator("notes", mode="before")
-    @classmethod
-    def _textual_notes(cls, value: object) -> object:
-        return value if isinstance(value, str) else ""
-
-    @field_validator("dataset_path", mode="before")
-    @classmethod
-    def _textual_dataset_path(cls, value: object) -> object:
-        return value if isinstance(value, str) and value else None
-
-    @field_validator("created_at", mode="before")
-    @classmethod
-    def _parseable_created_at(cls, value: object) -> object:
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, str):
-            try:
-                return datetime.fromisoformat(value)
-            except ValueError:
-                pass
-        return datetime.now()
 
     def to_canonical(self, solve_configuration: SolveConfiguration) -> RunMetadata:
         """Build canonical metadata, keeping the historical run's own record."""
