@@ -25,7 +25,6 @@ SOLVE_CONFIGURATION: dict[str, Any] = {
         }
     },
     "modelRoles": {"default": "default"},
-    "ttlSeconds": 86400,
 }
 RELEASED_RUN_JSON: dict[str, Any] = {
     "model": "claude-sonnet-4-5",

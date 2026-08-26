@@ -22,7 +22,6 @@ PROFILE: dict[str, Any] = {
         },
     },
     "modelRoles": {"default": "primary", "review": "reviewer"},
-    "ttlSeconds": 900,
 }
 
 
@@ -45,21 +44,6 @@ def test_resolves_two_arbitrary_environment_names(
         "reviewer": "second-key",
     }
     assert loaded.default_model == "model-v9"
-
-
-def test_loaded_profile_defaults_to_context_ttl(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Arrange
-    profile = {key: value for key, value in PROFILE.items() if key != "ttlSeconds"}
-    monkeypatch.setenv("FIRST_KEY", "first-key")
-    monkeypatch.setenv("SECOND_KEY", "second-key")
-
-    # Act
-    loaded = load_solve_profile(write_profile(tmp_path / "profile.json", profile))
-
-    # Assert
-    assert loaded.configuration.ttlSeconds == 86400
 
 
 def test_shared_environment_name_repeats_key_for_each_model(
@@ -106,7 +90,6 @@ def test_blank_environment_value_is_rejected(
         ({"models": {}, "modelRoles": {}}, "models"),
         ({"models": PROFILE["models"]}, "modelRoles"),
         ({**PROFILE, "credentials": {}}, "credentials"),
-        ({**PROFILE, "ttlSeconds": True}, "ttlSeconds"),
         ({**PROFILE, "modelRoles": {"default": "missing"}}, "modelRoles"),
     ],
 )
@@ -218,7 +201,6 @@ def test_standard_profile_is_valid(
     expected_configuration = {
         "models": {"default": {"transport": transport, "model": model, "apiKeyEnv": api_key_env}},
         "modelRoles": {"default": "default"},
-        "ttlSeconds": 86400,
     }
 
     # Act

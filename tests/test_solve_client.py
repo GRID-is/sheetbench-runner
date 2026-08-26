@@ -131,7 +131,6 @@ async def test_context_request_repeats_shared_keys_and_supports_different_keys()
                 },
             },
             "modelRoles": {"default": "primary", "review": "reviewer", "judge": "judge"},
-            "ttlSeconds": 900,
         }
     )
     route = respx.post("http://localhost:3000/solve-contexts").mock(
@@ -160,7 +159,6 @@ async def test_context_request_repeats_shared_keys_and_supports_different_keys()
             },
         },
         "modelRoles": {"default": "primary", "review": "reviewer", "judge": "judge"},
-        "ttlSeconds": 900,
     }
 
 

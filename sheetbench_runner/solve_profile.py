@@ -15,8 +15,6 @@ from pydantic import (
     model_validator,
 )
 
-DEFAULT_CONTEXT_TTL_SECONDS = 86400
-
 
 class SolveProfileError(ValueError):
     """A solve profile or its API-key environment is invalid."""
@@ -48,7 +46,6 @@ class SolveConfiguration(BaseModel):
 
     models: Annotated[Mapping[str, ProfileModel], Field(min_length=1)]
     modelRoles: Annotated[dict[str, str], Field(min_length=1)]
-    ttlSeconds: StrictInt | None = None
 
     @model_validator(mode="after")
     def _roles_name_configured_models(self) -> Self:
@@ -94,7 +91,5 @@ def load_solve_profile(path: Path) -> SolveProfile:
     except ValidationError as e:
         raise SolveProfileError(f"{path}: {e}") from e
 
-    if configuration.ttlSeconds is None:
-        configuration = configuration.model_copy(update={"ttlSeconds": DEFAULT_CONTEXT_TTL_SECONDS})
     default_model = configuration.models[configuration.modelRoles["default"]].model
     return SolveProfile(configuration, default_model)

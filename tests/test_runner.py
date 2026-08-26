@@ -40,7 +40,6 @@ PROFILE_MODEL: dict[str, object] = {
 PROFILE_CONFIGURATION = {
     "models": {"primary": PROFILE_MODEL},
     "modelRoles": {"default": "primary"},
-    "ttlSeconds": 86400,
 }
 CONTEXT_TOKEN = "Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M"
 
@@ -301,7 +300,12 @@ async def test_matching_resume_creates_context_and_skips_completed_tasks(
     "historical_metadata",
     [
         {"model": "different-model"},
-        {"solve_configuration": {**PROFILE_CONFIGURATION, "ttlSeconds": 601}},
+        {
+            "solve_configuration": {
+                **PROFILE_CONFIGURATION,
+                "modelRoles": {"default": "primary", "review": "primary"},
+            }
+        },
     ],
     ids=["model", "configuration"],
 )

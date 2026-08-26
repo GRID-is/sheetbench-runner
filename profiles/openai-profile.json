@@ -8,6 +8,5 @@
   },
   "modelRoles": {
     "default": "default"
-  },
-  "ttlSeconds": 86400
+  }
 }
