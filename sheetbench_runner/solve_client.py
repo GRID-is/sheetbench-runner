@@ -1,12 +1,11 @@
 """HTTP client for the solve server API with workbook upload/download."""
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, AsyncIterator, Mapping, Self
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Self
 
 import httpx
-from pydantic import Base64Bytes, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, Base64Bytes, BaseModel, ConfigDict, Field
 
 from .entities import SolveUsage
 from .solve_profile import SolveConfiguration
@@ -32,29 +31,17 @@ class NonRetryableSolveError(SolveError):
     """
 
 
-class SolveContextExpiredError(RetryableSolveError):
-    """The ephemeral solve context is no longer accepted by the server."""
-
-
 # Limit error message length for readability
 _ERROR_TEXT_MAX_LENGTH = 200
 
 
 @asynccontextmanager
-async def handle_http_errors(
-    operation: str,
-    *,
-    uses_context: bool = False,
-) -> AsyncIterator[None]:
+async def handle_http_errors(operation: str) -> AsyncIterator[None]:
     """Handle HTTP errors consistently across all operations."""
     try:
         yield
     except httpx.HTTPStatusError as e:
         detail = f": {e.response.text[:_ERROR_TEXT_MAX_LENGTH]}"
-        if uses_context and e.response.status_code == 401:
-            raise SolveContextExpiredError(
-                f"{operation} failed because solve context expired"
-            ) from e
         if e.response.status_code >= 500:
             raise RetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
         raise NonRetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
@@ -67,21 +54,21 @@ class UploadResponse(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    id: Annotated[str, Field(min_length=1)]
-    name: str
-    sheets: list[str]
+    id: str
 
 
-class SolveResponseBody(BaseModel):
-    """Body of a successful /solve response."""
+class SolveResponse(BaseModel):
+    """A successful /solve response."""
 
     model_config = ConfigDict(extra="ignore")
 
     id: str
     model: str
-    workbookId: str
+    workbook_id: str = Field(validation_alias=AliasChoices("workbookId", "workbook_id"))
     usage: SolveUsage
-    output_xlsx_base64: Base64Bytes | None = None
+    output_xlsx: Base64Bytes | None = Field(
+        default=None, validation_alias=AliasChoices("output_xlsx_base64", "output_xlsx")
+    )
     transcript: dict[str, Any]
 
 
@@ -91,18 +78,6 @@ class SolveContextResponseBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
-
-
-@dataclass(frozen=True)
-class SolveResponse:
-    """Response from /solve endpoint."""
-
-    id: str
-    model: str
-    usage: SolveUsage
-    workbook_id: str
-    output_xlsx: bytes | None = None
-    transcript: dict[str, Any] | None = None
 
 
 class SolveClient:
@@ -136,6 +111,8 @@ class SolveClient:
         self._client = client
         self._owns_client = client is None
         self._solve_context_id: str | None = None
+        self._profile: SolveConfiguration | None = None
+        self._api_keys: Mapping[str, str] = {}
 
     async def __aenter__(self) -> Self:
         if self._client is None:
@@ -170,37 +147,42 @@ class SolveClient:
             result: dict[str, object] = response.json()
             return result
 
-    def _context_headers(self) -> dict[str, str]:
+    async def _context_headers(self) -> dict[str, str]:
         if self._solve_context_id is None:
-            raise RuntimeError("A solve context must be created before upload or solve")
-        return {"X-Solve-Context": self._solve_context_id}
+            if self._profile is None:
+                raise RuntimeError("A solve context must be created before upload or solve")
+            await self._create_context()
+        return {"X-Solve-Context": self._solve_context_id or ""}
 
-    async def _delete_solve_context_id(self, context_id: str) -> None:
-        async with handle_http_errors("Delete solve context"):
-            response = await self.client.delete(
-                f"{self.base_url}/solve-contexts/current",
-                headers={"X-Solve-Context": context_id},
-            )
-            if response.status_code == 401:
-                return
-            response.raise_for_status()
+    async def _send_with_context(
+        self, send: Callable[[dict[str, str]], Awaitable[httpx.Response]]
+    ) -> httpx.Response:
+        response = await send(await self._context_headers())
+        if response.status_code == 401:
+            self._solve_context_id = None
+            response = await send(await self._context_headers())
+        return response
 
     async def create_solve_context(
         self,
         profile: SolveConfiguration,
         api_keys: Mapping[str, str],
     ) -> str:
-        """Create and retain one solve context for subsequent task requests."""
-        if self._solve_context_id is not None:
-            raise RuntimeError("A solve context already exists")
+        """Create a solve context; a context the server no longer accepts is recreated."""
+        self._profile = profile
+        self._api_keys = api_keys
+        return await self._create_context()
+
+    async def _create_context(self) -> str:
+        assert self._profile is not None
         payload_models = {
             name: {
                 **model.model_dump(exclude={"apiKeyEnv"}, exclude_none=True),
-                "apiKey": api_keys[name],
+                "apiKey": self._api_keys[name],
             }
-            for name, model in profile.models.items()
+            for name, model in self._profile.models.items()
         }
-        payload = {**profile.model_dump(exclude_none=True), "models": payload_models}
+        payload = {**self._profile.model_dump(exclude_none=True), "models": payload_models}
 
         async with handle_http_errors("Create solve context"):
             response = await self.client.post(f"{self.base_url}/solve-contexts", json=payload)
@@ -214,12 +196,16 @@ class SolveClient:
         return body.id
 
     async def delete_solve_context(self) -> None:
-        """Delete the retained solve context and forget its identifier."""
-        headers = self._context_headers()
-        try:
-            await self._delete_solve_context_id(headers["X-Solve-Context"])
-        finally:
-            self._solve_context_id = None
+        """Delete the retained solve context, if any."""
+        if self._solve_context_id is None:
+            return
+        headers = {"X-Solve-Context": self._solve_context_id}
+        self._solve_context_id = None
+        async with handle_http_errors("Delete solve context"):
+            response = await self.client.delete(
+                f"{self.base_url}/solve-contexts/current", headers=headers
+            )
+            response.raise_for_status()
 
     async def upload_workbook(self, filepath: Path) -> str:
         """
@@ -235,20 +221,19 @@ class SolveClient:
             RetryableSolveError: For 5xx errors, timeouts, connection failures
             NonRetryableSolveError: For 4xx errors
         """
-        async with handle_http_errors("Upload", uses_context=True):
-            with open(filepath, "rb") as f:
-                files = {
-                    "file": (
-                        filepath.name,
-                        f,
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-                }
-                response = await self.client.post(
-                    f"{self.base_url}/workbooks/upload",
-                    files=files,
-                    headers=self._context_headers(),
+        files = {
+            "file": (
+                filepath.name,
+                filepath.read_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        }
+        async with handle_http_errors("Upload"):
+            response = await self._send_with_context(
+                lambda headers: self.client.post(
+                    f"{self.base_url}/workbooks/upload", files=files, headers=headers
                 )
+            )
             response.raise_for_status()
         try:
             return UploadResponse.model_validate(response.json()).id
@@ -279,25 +264,17 @@ class SolveClient:
             "messages": [{"role": "user", "content": prompt}],
         }
 
-        async with handle_http_errors("Solve", uses_context=True):
-            response = await self.client.post(
-                f"{self.base_url}/solve",
-                json=payload,
-                headers=self._context_headers(),
+        async with handle_http_errors("Solve"):
+            response = await self._send_with_context(
+                lambda headers: self.client.post(
+                    f"{self.base_url}/solve", json=payload, headers=headers
+                )
             )
             response.raise_for_status()
         try:
-            body = SolveResponseBody.model_validate(response.json())
+            return SolveResponse.model_validate(response.json())
         except ValueError as e:
             raise NonRetryableSolveError("Invalid solve response") from e
-        return SolveResponse(
-            id=body.id,
-            model=body.model,
-            usage=body.usage,
-            workbook_id=body.workbookId,
-            output_xlsx=body.output_xlsx_base64,
-            transcript=body.transcript,
-        )
 
     async def download_workbook(self, workbook_id: str) -> bytes:
         """

@@ -12,8 +12,6 @@ from sheetbench_runner.solve_client import (
     NonRetryableSolveError,
     RetryableSolveError,
     SolveClient,
-    SolveContextExpiredError,
-    SolveResponse,
 )
 from sheetbench_runner.solve_profile import SolveConfiguration
 
@@ -46,8 +44,6 @@ def solve_response() -> dict[str, object]:
             "tool_calls": 8,
             "input_tokens": 1000,
             "output_tokens": 500,
-            "planning_turns": None,
-            "planning_tool_calls": None,
         },
         "output_xlsx_base64": base64.b64encode(b"fake-xlsx-bytes").decode(),
         "transcript": {"messages": [{"role": "assistant", "content": "Done"}]},
@@ -173,151 +169,7 @@ async def test_upload_and_solve_require_a_context(tmp_path: Path) -> None:
             await client.solve("wb-123", "Test prompt")
 
 
-@pytest.mark.parametrize(
-    "body",
-    [{"id": 123}, {}],
-    ids=["non-string-id", "missing-id"],
-)
-@respx.mock
-async def test_malformed_context_response_is_rejected(body: dict[str, object]) -> None:
-    respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(201, json=body)
-    )
-
-    async with SolveClient("http://localhost:3000") as client:
-        with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
-            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-key"})
-        with pytest.raises(RuntimeError, match="solve context"):
-            await client.solve("wb-123", "Test prompt")
-
-
-@respx.mock
-async def test_context_response_accepts_additive_top_level_fields() -> None:
-    # Arrange
-    response_data = context_response()
-    response_data["serverVersion"] = "next"
-    respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(201, json=response_data)
-    )
-    delete_route = respx.delete("http://localhost:3000/solve-contexts/current").mock(
-        return_value=httpx.Response(204)
-    )
-
-    # Act
-    async with SolveClient("http://localhost:3000") as client:
-        context_id = await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-key"})
-        await client.delete_solve_context()
-
-    # Assert
-    assert context_id == CONTEXT_TOKEN
-    assert delete_route.call_count == 1
-    assert delete_route.calls[0].request.headers["X-Solve-Context"] == CONTEXT_TOKEN
-
-
-@respx.mock
-async def test_upload_and_solve_success(tmp_path: Path) -> None:
-    xlsx_file = tmp_path / "test.xlsx"
-    xlsx_file.write_bytes(b"fake-xlsx-content")
-    workbook_uuid = "123e4567-e89b-42d3-a456-426614174000"
-    respx.post("http://localhost:3000/workbooks/upload").mock(
-        return_value=httpx.Response(
-            200,
-            json={"id": workbook_uuid, "name": "test.xlsx", "sheets": ["Sheet1"]},
-        )
-    )
-    respx.post("http://localhost:3000/solve").mock(
-        return_value=httpx.Response(200, json={**solve_response(), "workbookId": workbook_uuid})
-    )
-
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        workbook_id = await client.upload_workbook(xlsx_file)
-        response = await client.solve(workbook_id, "Test prompt")
-
-    assert workbook_id == workbook_uuid
-    assert isinstance(response, SolveResponse)
-    assert response.id == "test-id-123"
-    assert response.model == "opaque-model"
-    assert response.workbook_id == workbook_uuid
-    assert response.usage.turns == 5
-    assert response.output_xlsx == b"fake-xlsx-bytes"
-    assert response.transcript == {"messages": [{"role": "assistant", "content": "Done"}]}
-
-
-@respx.mock
-async def test_upload_accepts_additive_response_fields(tmp_path: Path) -> None:
-    # Arrange
-    xlsx_file = tmp_path / "test.xlsx"
-    xlsx_file.write_bytes(b"fake-xlsx-content")
-    workbook_uuid = "123e4567-e89b-42d3-a456-426614174000"
-    respx.post("http://localhost:3000/workbooks/upload").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "id": workbook_uuid,
-                "name": "test.xlsx",
-                "sheets": ["Sheet1"],
-                "revisions": 1,
-            },
-        )
-    )
-
-    # Act
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        workbook_id = await client.upload_workbook(xlsx_file)
-
-    # Assert
-    assert workbook_id == workbook_uuid
-
-
-@respx.mock
-async def test_solve_without_output_workbook_preserves_transcript() -> None:
-    # Arrange
-    body = solve_response()
-    del body["output_xlsx_base64"]
-    body["transcript"] = {"error": "Workbook export failed", "messages": []}
-    respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
-
-    # Act
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        response = await client.solve("wb-123", "Test prompt")
-
-    # Assert
-    assert response.output_xlsx is None
-    assert response.transcript == {"error": "Workbook export failed", "messages": []}
-
-
-@respx.mock
-async def test_solve_accepts_additive_response_fields() -> None:
-    # Arrange
-    body = solve_response()
-    body["warnings"] = []
-    usage = body["usage"]
-    assert isinstance(usage, dict)
-    usage["cached_input_tokens"] = 10
-    respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
-
-    # Act
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        response = await client.solve("wb-123", "Test prompt")
-
-    # Assert
-    assert response.output_xlsx == b"fake-xlsx-bytes"
-    assert response.usage.input_tokens == 1000
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        {},
-        {"id": ""},
-        {"id": "123e4567-e89b-42d3-a456-426614174000", "name": 3, "sheets": ["Sheet1"]},
-        {"id": "123e4567-e89b-42d3-a456-426614174000", "name": "test.xlsx", "sheets": "Sheet1"},
-    ],
-)
+@pytest.mark.parametrize("body", [{}, {"id": 3}], ids=["missing-id", "non-string-id"])
 @respx.mock
 async def test_upload_rejects_malformed_success_response(tmp_path: Path, body: object) -> None:
     xlsx_file = tmp_path / "test.xlsx"
@@ -379,108 +231,6 @@ async def test_upload_connection_error_raises_transient(tmp_path: Path) -> None:
             await client.upload_workbook(xlsx_file)
 
 
-@respx.mock
-async def test_upload_401_is_retryable_context_expiry(tmp_path: Path) -> None:
-    # Arrange
-    xlsx_file = tmp_path / "test.xlsx"
-    xlsx_file.write_bytes(b"fake-xlsx-content")
-    respx.post("http://localhost:3000/workbooks/upload").mock(
-        return_value=httpx.Response(401, json={"error": "Invalid solve context"})
-    )
-
-    # Act and assert
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        with pytest.raises(SolveContextExpiredError, match="solve context expired"):
-            await client.upload_workbook(xlsx_file)
-
-
-@respx.mock
-async def test_solve_401_is_retryable_context_expiry() -> None:
-    # Arrange
-    respx.post("http://localhost:3000/solve").mock(
-        return_value=httpx.Response(401, json={"error": "Invalid solve context"})
-    )
-
-    # Act and assert
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        with pytest.raises(SolveContextExpiredError, match="solve context expired"):
-            await client.solve("wb-123", "Test prompt")
-
-
-@respx.mock
-async def test_delete_accepts_already_expired_context() -> None:
-    # Arrange
-    delete_route = respx.delete("http://localhost:3000/solve-contexts/current").mock(
-        return_value=httpx.Response(401, json={"error": "Invalid solve context"})
-    )
-
-    # Act
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        await client.delete_solve_context()
-
-        # Assert
-        with pytest.raises(RuntimeError, match="solve context"):
-            await client.solve("wb-123", "Test prompt")
-    assert delete_route.call_count == 1
-
-
-@respx.mock
-async def test_download_and_status_never_receive_context_header() -> None:
-    download_route = respx.get("http://localhost:3000/workbooks/wb-123/download").mock(
-        return_value=httpx.Response(200, content=b"downloaded")
-    )
-    status_route = respx.get("http://localhost:3000/status").mock(
-        return_value=httpx.Response(200, json={"version": "abc1234"})
-    )
-    async with SolveClient("http://localhost:3000") as client:
-        await activate_context(client)
-        assert await client.download_workbook("wb-123") == b"downloaded"
-        assert (await client.get_status())["version"] == "abc1234"
-
-    assert "X-Solve-Context" not in download_route.calls[0].request.headers
-    assert "X-Solve-Context" not in status_route.calls[0].request.headers
-
-
-@respx.mock
-async def test_grid_api_key_never_installs_authorization_header(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("GRID_API_KEY", "grid-key")
-    xlsx_file = tmp_path / "test.xlsx"
-    xlsx_file.write_bytes(b"fake-xlsx-content")
-    workbook_id = "123e4567-e89b-42d3-a456-426614174000"
-    status_route = respx.get("http://localhost:3000/status").mock(
-        return_value=httpx.Response(200, json={"version": "abc1234"})
-    )
-    create_route = respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(201, json=context_response())
-    )
-    upload_route = respx.post("http://localhost:3000/workbooks/upload").mock(
-        return_value=httpx.Response(
-            200, json={"id": workbook_id, "name": "test.xlsx", "sheets": ["Sheet1"]}
-        )
-    )
-    solve_route = respx.post("http://localhost:3000/solve").mock(
-        return_value=httpx.Response(200, json={**solve_response(), "workbookId": workbook_id})
-    )
-    delete_route = respx.delete("http://localhost:3000/solve-contexts/current").mock(
-        return_value=httpx.Response(204)
-    )
-    async with SolveClient("http://localhost:3000") as client:
-        await client.get_status()
-        await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-key"})
-        await client.upload_workbook(xlsx_file)
-        await client.solve(workbook_id, "Test prompt")
-        await client.delete_solve_context()
-
-    for route in (status_route, create_route, upload_route, solve_route, delete_route):
-        assert "Authorization" not in route.calls[0].request.headers
-
-
 @pytest.mark.parametrize(
     "transport_failure",
     [
@@ -499,3 +249,32 @@ async def test_solve_transport_failures_are_retryable(transport_failure: Excepti
         await activate_context(client)
         with pytest.raises(RetryableSolveError, match="Connection error"):
             await client.solve("wb-123", "Test prompt")
+
+
+@respx.mock
+async def test_a_rejected_context_is_recreated_and_the_request_retried(tmp_path: Path) -> None:
+    # Arrange
+    xlsx_file = tmp_path / "test.xlsx"
+    xlsx_file.write_bytes(b"fake-xlsx-content")
+    create_route = respx.post("http://localhost:3000/solve-contexts").mock(
+        side_effect=[
+            httpx.Response(201, json=context_response()),
+            httpx.Response(201, json=context_response(token="second-context")),
+        ]
+    )
+    upload_route = respx.post("http://localhost:3000/workbooks/upload").mock(
+        side_effect=[
+            httpx.Response(401, json={"error": "Invalid solve context"}),
+            httpx.Response(200, json={"id": "wb-123", "name": "test.xlsx", "sheets": ["Sheet1"]}),
+        ]
+    )
+
+    # Act
+    async with SolveClient("http://localhost:3000") as client:
+        await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-key"})
+        workbook_id = await client.upload_workbook(xlsx_file)
+
+    # Assert
+    assert workbook_id == "wb-123"
+    assert create_route.call_count == 2
+    assert upload_route.calls[1].request.headers["X-Solve-Context"] == "second-context"

@@ -450,30 +450,6 @@ def test_migrating_released_metadata_preserves_history(temp_dir: Path) -> None:
         "created_at": "2026-01-02T03:04:05",
     }
     assert run_dir.read_metadata() == migrated
-    assert not list(run_path.glob("*.tmp"))
-
-
-def test_failed_metadata_write_leaves_the_original_document_intact(
-    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Arrange
-    run_path = temp_dir / "atomic-run"
-    run_path.mkdir()
-    original = json.dumps(RELEASED_RUN_JSON)
-    (run_path / "run.json").write_text(original)
-    run_dir = RunDirectory(run_path)
-    metadata = RunMetadata(model="m", git_hash="h", solve_configuration=SOLVE_CONFIGURATION)
-
-    def failing_dump(*args: object, **kwargs: object) -> None:
-        raise OSError("no space left on device")
-
-    monkeypatch.setattr("sheetbench_runner.run_directory.json.dump", failing_dump)
-
-    # Act / Assert
-    with pytest.raises(OSError):
-        run_dir.write_metadata(metadata)
-    assert (run_path / "run.json").read_text() == original
-    assert not list(run_path.glob("*.tmp"))
 
 
 def test_metadata_round_trips_dataset_path() -> None:

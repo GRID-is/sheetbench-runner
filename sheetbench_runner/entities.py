@@ -83,8 +83,6 @@ class SolveUsage(BaseModel):
     tool_calls: NonNegativeInt
     input_tokens: NonNegativeInt
     output_tokens: NonNegativeInt
-    planning_turns: NonNegativeInt | None = None
-    planning_tool_calls: NonNegativeInt | None = None
 
 
 @dataclass(frozen=True)

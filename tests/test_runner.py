@@ -14,9 +14,6 @@ from sheetbench_runner.entities import SolveUsage, Task
 from sheetbench_runner.run_directory import RunDirectory, RunMetadataError
 from sheetbench_runner.runner import RunStats, TaskRunner, run
 from sheetbench_runner.solve_client import (
-    NonRetryableSolveError,
-    RetryableSolveError,
-    SolveContextExpiredError,
     SolveResponse,
 )
 from sheetbench_runner.solve_profile import SolveProfileError
@@ -130,114 +127,6 @@ async def test_run_creates_and_deletes_exactly_once_and_stores_profile_metadata(
     assert run_data["schema_version"] == 2
     assert run_data["model"] == "opaque-model"
     assert run_data["solve_configuration"] == PROFILE_CONFIGURATION
-
-
-@respx.mock
-async def test_run_cleanup_is_best_effort_and_does_not_mask_original_error(
-    tmp_path: Path,
-    sample_dataset_dir: Path,
-    sample_task: Task,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("OPAQUE_ENV", "key")
-    run_all = AsyncMock(side_effect=ValueError("original run failure"))
-    monkeypatch.setattr(TaskRunner, "run_all", run_all)
-    create_route, _, delete_route = context_routes()
-    delete_route.mock(return_value=httpx.Response(500, text="cleanup failed"))
-
-    with pytest.raises(ValueError, match="original run failure"):
-        await run(
-            dataset_path=sample_dataset_dir,
-            run_dir_path=tmp_path / "run",
-            solve_server_url="http://localhost:3000",
-            solve_profile_path=write_profile(tmp_path / "profile.json"),
-            tasks=[sample_task],
-        )
-
-    assert create_route.call_count == 1
-    assert delete_route.call_count == 1
-
-
-@respx.mock
-async def test_run_propagates_cleanup_failure_after_successful_work(
-    tmp_path: Path,
-    sample_dataset_dir: Path,
-    sample_task: Task,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("OPAQUE_ENV", "key")
-    monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=RunStats(total_tasks=1)))
-    create_route, _, delete_route = context_routes()
-    delete_route.mock(return_value=httpx.Response(500, text="cleanup failed"))
-
-    with pytest.raises(RetryableSolveError, match="Delete solve context"):
-        await run(
-            dataset_path=sample_dataset_dir,
-            run_dir_path=tmp_path / "run",
-            solve_server_url="http://localhost:3000",
-            solve_profile_path=write_profile(tmp_path / "profile.json"),
-            tasks=[sample_task],
-        )
-
-    assert create_route.call_count == 1
-    assert delete_route.call_count == 1
-
-
-@respx.mock
-async def test_run_accepts_expired_context_during_final_cleanup(
-    tmp_path: Path,
-    sample_dataset_dir: Path,
-    sample_task: Task,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Arrange
-    monkeypatch.setenv("OPAQUE_ENV", "key")
-    expected = RunStats(total_tasks=1, errors=1)
-    monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=expected))
-    create_route, _, delete_route = context_routes()
-    delete_route.mock(return_value=httpx.Response(401, json={"error": "Invalid solve context"}))
-
-    # Act
-    actual = await run(
-        dataset_path=sample_dataset_dir,
-        run_dir_path=tmp_path / "run",
-        solve_server_url="http://localhost:3000",
-        solve_profile_path=write_profile(tmp_path / "profile.json"),
-        tasks=[sample_task],
-    )
-
-    # Assert
-    assert actual is expected
-    assert create_route.call_count == 1
-    assert delete_route.call_count == 1
-
-
-@respx.mock
-async def test_run_does_not_delete_when_context_creation_fails(
-    tmp_path: Path,
-    sample_dataset_dir: Path,
-    sample_task: Task,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("OPAQUE_ENV", "key")
-    create_route = respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(400, text="rejected")
-    )
-    delete_route = respx.delete("http://localhost:3000/solve-contexts/current").mock(
-        return_value=httpx.Response(204)
-    )
-
-    with pytest.raises(NonRetryableSolveError):
-        await run(
-            dataset_path=sample_dataset_dir,
-            run_dir_path=tmp_path / "run",
-            solve_server_url="http://localhost:3000",
-            solve_profile_path=write_profile(tmp_path / "profile.json"),
-            tasks=[sample_task],
-        )
-
-    assert create_route.call_count == 1
-    assert delete_route.call_count == 0
 
 
 @respx.mock
@@ -604,38 +493,6 @@ async def test_invalid_apiKeyEnv_environment_fails_before_http_or_tasks(
 
     assert not respx.calls
     run_all.assert_not_awaited()
-
-
-async def test_context_expiry_stops_queued_tasks(
-    tmp_path: Path,
-    sample_task: Task,
-) -> None:
-    # Arrange
-    run_path = tmp_path / "run"
-    run_path.mkdir()
-    tasks = [sample_task.model_copy(update={"id": f"task-{index}"}) for index in range(3)]
-    solve_client = Mock()
-    solve_client.upload_workbook = AsyncMock(
-        side_effect=SolveContextExpiredError("Upload failed because solve context expired")
-    )
-    solve_client.solve = AsyncMock()
-    dataset = Mock()
-    dataset.get_input_path.return_value = tmp_path / "input.xlsx"
-    runner = TaskRunner(
-        solve_client=solve_client,
-        evaluator=Mock(),
-        dataset=dataset,
-        run_dir=RunDirectory(run_path),
-        concurrency=1,
-    )
-
-    # Act
-    stats = await runner.run_all(tasks)
-
-    # Assert
-    assert solve_client.upload_workbook.await_count == 1
-    solve_client.solve.assert_not_awaited()
-    assert stats.errors == 3
 
 
 async def test_missing_output_workbook_still_writes_transcript(

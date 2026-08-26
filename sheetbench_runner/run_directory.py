@@ -1,8 +1,6 @@
 """Run directory management for SpreadsheetBench results."""
 
 import json
-import os
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -75,7 +73,7 @@ class RunDirectory:
             metadata: Metadata to write to run.json
         """
         self.path.mkdir(parents=True, exist_ok=True)
-        self._replace_run_json(metadata.model_dump(mode="json"))
+        self.run_json_path.write_text(json.dumps(metadata.model_dump(mode="json"), indent=2))
 
         # Initialize results.json only if it doesn't exist
         if not self.results_path.exists():
@@ -138,20 +136,9 @@ class RunDirectory:
         with open(self.results_path, "w") as f:
             json.dump(results_list, f, indent=2)
 
-    def _replace_run_json(self, document: dict[str, Any]) -> None:
-        """Write run.json through a same-directory temporary file and an atomic replace."""
-        handle, temporary_name = tempfile.mkstemp(dir=self.path, prefix="run.json.", suffix=".tmp")
-        try:
-            with os.fdopen(handle, "w") as f:
-                json.dump(document, f, indent=2)
-            os.replace(temporary_name, self.run_json_path)
-        except BaseException:
-            Path(temporary_name).unlink(missing_ok=True)
-            raise
-
     def write_metadata(self, metadata: RunMetadata) -> None:
-        """Serialize canonical metadata over run.json without a partial write."""
-        self._replace_run_json(metadata.model_dump(mode="json"))
+        """Write canonical metadata to run.json."""
+        self.run_json_path.write_text(json.dumps(metadata.model_dump(mode="json"), indent=2))
 
     def read_metadata(self) -> RunMetadata | LegacyRunMetadata | None:
         """Decode run.json as canonical or released metadata, or raise RunMetadataError."""

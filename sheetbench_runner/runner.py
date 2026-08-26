@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -23,7 +22,6 @@ from .run_directory import LegacyRunMetadata, RunDirectory
 from .solve_client import (
     RetryableSolveError,
     SolveClient,
-    SolveContextExpiredError,
 )
 from .solve_profile import SolveProfileError, load_solve_profile
 
@@ -89,7 +87,6 @@ class TaskRunner:
         self._semaphore = asyncio.Semaphore(concurrency)
 
         self._stats = RunStats()
-        self._context_expired = asyncio.Event()
         self._progress: Progress | None = None
         self._progress_task: TaskID | None = None
         self._live: Live | None = None
@@ -267,15 +264,6 @@ class TaskRunner:
         Uses semaphore to limit concurrency.
         """
         async with self._semaphore:
-            if self._context_expired.is_set():
-                result = TaskResult(
-                    task_id=task.id,
-                    status=TaskStatus.FAILED,
-                    error="Solve context expired; retry on resume",
-                )
-                self._task_completed(task.id, passed=None)
-                return result
-
             self._stats.running_tasks.add(task.id)
             self._update_display()
             logger.debug(f"Starting task {task.id}")
@@ -368,8 +356,6 @@ class TaskRunner:
                 return result
 
             except RetryableSolveError as e:
-                if isinstance(e, SolveContextExpiredError):
-                    self._context_expired.set()
                 duration = time.time() - start_time
                 logger.warning(f"Task {task.id} transient error after {duration:.1f}s: {e}")
                 result.status = TaskStatus.FAILED
@@ -516,10 +502,8 @@ async def run(
     api_keys = solve_profile.resolve_api_keys()
 
     async with SolveClient(solve_server_url, timeout_seconds) as solve_client:
-        context_created = False
         try:
             await solve_client.create_solve_context(solve_profile.configuration, api_keys)
-            context_created = True
 
             if isinstance(existing_metadata, LegacyRunMetadata):
                 logger.info(f"Migrating released run metadata at {run_dir_path}")
@@ -552,11 +536,7 @@ async def run(
             )
             return await runner.run_all(tasks)
         finally:
-            if context_created:
-                primary_error = sys.exception()
-                try:
-                    await solve_client.delete_solve_context()
-                except Exception as e:
-                    if primary_error is None:
-                        raise
-                    logger.warning(f"Could not delete solve context: {e}")
+            try:
+                await solve_client.delete_solve_context()
+            except Exception as e:
+                logger.warning(f"Could not delete solve context: {e}")
