@@ -1,8 +1,9 @@
 # SheetBench Runner Configuration
 # Copy to config.toml and adjust as needed
 
-[infuser]
+[solve]
 url = "http://localhost:3000"
+profile = "profiles/anthropic-profile.json" # Non-secret JSON; models name apiKeyEnv variables
 
 [runner]
 concurrency = 4           # Number of parallel tasks

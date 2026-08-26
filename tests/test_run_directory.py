@@ -1,10 +1,43 @@
 """Tests for run directory management."""
 
 import json
+from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from sheetbench_runner.entities import RunMetadata, TaskResult, TaskStatus
-from sheetbench_runner.run_directory import RunDirectory
+from sheetbench_runner.run_directory import (
+    LegacyRunMetadata,
+    RunDirectory,
+    RunMetadataError,
+)
+from sheetbench_runner.runner import check_dataset_binding
+
+SOLVE_CONFIGURATION: dict[str, Any] = {
+    "models": {
+        "default": {
+            "transport": "anthropic",
+            "model": "claude-sonnet-5",
+            "apiKeyEnv": "ANTHROPIC_API_KEY",
+            "options": None,
+        }
+    },
+    "modelRoles": {"default": "default"},
+}
+RELEASED_RUN_JSON: dict[str, Any] = {
+    "model": "claude-sonnet-4-5",
+    "git_hash": "released-sha",
+    "infuser_config": {
+        "default_model": "claude-sonnet-4-5",
+        "version": "released-sha",
+        "status": "healthy",
+    },
+    "test_set": 1,
+    "notes": "released run",
+    "created_at": "2026-01-02T03:04:05",
+}
 
 
 def test_create_new_run_directory(temp_dir: Path):
@@ -13,9 +46,9 @@ def test_create_new_run_directory(temp_dir: Path):
     run_path = temp_dir / "new-run"
     run_dir = RunDirectory(run_path)
     metadata = RunMetadata(
-        model="claude-sonnet-4-5",
+        model="claude-sonnet-5",
         git_hash="abc123",
-        infuser_config={"planning_enabled": False, "verification_enabled": True},
+        solve_configuration=SOLVE_CONFIGURATION,
         test_set=1,
         notes="Test run",
     )
@@ -30,12 +63,16 @@ def test_create_new_run_directory(temp_dir: Path):
 
     with open(run_path / "run.json") as f:
         run_data = json.load(f)
-    # model and git_hash at root level for compatibility
-    assert run_data["model"] == "claude-sonnet-4-5"
-    assert run_data["git_hash"] == "abc123"
-    # full infuser config preserved
-    assert run_data["infuser_config"]["planning_enabled"] is False
-    assert run_data["infuser_config"]["verification_enabled"] is True
+    assert run_data == {
+        "schema_version": 2,
+        "model": "claude-sonnet-5",
+        "git_hash": "abc123",
+        "solve_configuration": SOLVE_CONFIGURATION,
+        "test_set": 1,
+        "notes": "Test run",
+        "dataset_path": None,
+        "created_at": metadata.created_at.isoformat(),
+    }
 
 
 def test_load_existing_results(temp_dir: Path):
@@ -227,7 +264,9 @@ def test_create_preserves_existing_results(temp_dir: Path):
         json.dump(existing_results, f)
 
     run_dir = RunDirectory(run_path)
-    metadata = RunMetadata(model="test-model", git_hash="test123", infuser_config={})
+    metadata = RunMetadata(
+        model="test-model", git_hash="test123", solve_configuration=SOLVE_CONFIGURATION
+    )
 
     # Act - create run.json (results.json already exists)
     run_dir.create(metadata)
@@ -240,40 +279,229 @@ def test_create_preserves_existing_results(temp_dir: Path):
     assert results[1]["task_id"] == "17-35"
 
 
-class TestDatasetBinding:
-    """Run dirs record their dataset; regrades must not silently mix categories."""
+def test_read_metadata_returns_none_without_run_json(temp_dir: Path) -> None:
+    # Arrange
+    run_path = temp_dir / "empty-run"
+    run_path.mkdir()
 
-    def test_metadata_round_trips_dataset_path(self):
-        m = RunMetadata(
-            model="m",
-            git_hash="g",
-            infuser_config={},
-            dataset_path="../SpreadsheetBench/data/spreadsheetbench-v2/Template",
-        )
-        d = m.to_dict()
-        assert d["dataset_path"].endswith("Template")
-        assert RunMetadata.from_dict(d).dataset_path == m.dataset_path
+    # Act / Assert
+    assert RunDirectory(run_path).read_metadata() is None
 
-    def test_metadata_dataset_path_optional_for_legacy_runs(self):
-        m = RunMetadata.from_dict({"model": "m", "git_hash": "g", "infuser_config": {}})
-        assert m.dataset_path is None
 
-    def test_binding_check_accepts_match_and_legacy(self, tmp_path):
-        from sheetbench_runner.runner import check_dataset_binding
+def test_read_metadata_decodes_canonical_document(temp_dir: Path) -> None:
+    # Arrange
+    run_path = temp_dir / "canonical-run"
+    run_dir = RunDirectory(run_path)
+    metadata = RunMetadata(
+        model="claude-sonnet-5",
+        git_hash="abc123",
+        solve_configuration=SOLVE_CONFIGURATION,
+        test_set=2,
+        notes="canonical",
+    )
+    run_dir.create(metadata)
 
-        d = tmp_path / "Financial_Model"
-        d.mkdir()
-        check_dataset_binding(str(d), d)  # exact match ok
-        check_dataset_binding(None, d)  # legacy run.json without field ok
+    # Act
+    actual = run_dir.read_metadata()
 
-    def test_binding_check_rejects_mismatch(self, tmp_path):
-        import pytest
+    # Assert
+    assert actual == metadata
 
-        from sheetbench_runner.runner import check_dataset_binding
 
-        a = tmp_path / "Financial_Model"
-        b = tmp_path / "Template"
-        a.mkdir()
-        b.mkdir()
-        with pytest.raises(ValueError, match="Template"):
-            check_dataset_binding(str(a), b)
+def test_read_metadata_decodes_released_legacy_document(temp_dir: Path) -> None:
+    # Arrange
+    run_path = temp_dir / "released-run"
+    run_path.mkdir()
+    (run_path / "run.json").write_text(json.dumps(RELEASED_RUN_JSON))
+
+    # Act
+    actual = RunDirectory(run_path).read_metadata()
+
+    # Assert
+    assert actual == LegacyRunMetadata(
+        model="claude-sonnet-4-5",
+        git_hash="released-sha",
+        test_set=1,
+        notes="released run",
+        created_at=datetime.fromisoformat("2026-01-02T03:04:05"),
+    )
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"schema_version": 1, "model": "m", "git_hash": "h", "solve_configuration": {}},
+        {"schema_version": 2, "git_hash": "h", "solve_configuration": SOLVE_CONFIGURATION},
+        {"schema_version": 2, "model": "m", "git_hash": "h", "solve_configuration": []},
+        {key: value for key, value in RELEASED_RUN_JSON.items() if key != "model"},
+        {**RELEASED_RUN_JSON, "model": None},
+        {**RELEASED_RUN_JSON, "model": 7},
+        [],
+        "not-an-object",
+    ],
+    ids=[
+        "wrong-schema-version",
+        "missing-model-canonical",
+        "configuration-not-an-object",
+        "missing-model-legacy",
+        "null-model-legacy",
+        "wrong-type-model-legacy",
+        "not-a-mapping",
+        "not-json-object",
+    ],
+)
+def test_read_metadata_rejects_undecodable_documents(temp_dir: Path, document: object) -> None:
+    # Arrange
+    run_path = temp_dir / "broken-run"
+    run_path.mkdir()
+    (run_path / "run.json").write_text(json.dumps(document))
+
+    # Act / Assert
+    with pytest.raises(RunMetadataError):
+        RunDirectory(run_path).read_metadata()
+
+
+def test_read_metadata_decodes_legacy_document_without_infuser_config(temp_dir: Path) -> None:
+    """Real pre-solve run.json files never had infuser_config."""
+    # Arrange
+    run_path = temp_dir / "no-infuser-config-run"
+    run_path.mkdir()
+    document = {
+        "git_hash": "abc0001",
+        "model": "claude-sonnet-4-5",
+        "notes": "",
+        "test_set": None,
+    }
+    (run_path / "run.json").write_text(json.dumps(document))
+
+    # Act
+    actual = RunDirectory(run_path).read_metadata()
+
+    # Assert
+    assert isinstance(actual, LegacyRunMetadata)
+    assert actual.model == "claude-sonnet-4-5"
+    assert actual.git_hash == "abc0001"
+    assert actual.test_set is None
+    assert actual.notes == ""
+
+
+def test_read_metadata_decodes_legacy_document_with_only_model(temp_dir: Path) -> None:
+    # Arrange
+    run_path = temp_dir / "minimal-run"
+    run_path.mkdir()
+    (run_path / "run.json").write_text(json.dumps({"model": "claude-sonnet-4-5"}))
+
+    # Act
+    before = datetime.now()
+    actual = RunDirectory(run_path).read_metadata()
+    after = datetime.now()
+
+    # Assert
+    assert isinstance(actual, LegacyRunMetadata)
+    assert actual.model == "claude-sonnet-4-5"
+    assert actual.git_hash == "unknown"
+    assert actual.test_set is None
+    assert actual.notes == ""
+    assert before <= actual.created_at <= after
+
+
+@pytest.mark.parametrize(
+    "created_at",
+    ["2026-01-02", "2026-01-02 03:04:05", "2026-01-02T03:04:05Z"],
+    ids=["date-only", "space-separated", "zulu"],
+)
+def test_read_metadata_keeps_any_parseable_legacy_timestamp(
+    temp_dir: Path, created_at: str
+) -> None:
+    # Arrange
+    run_path = temp_dir / "parseable-created-at-run"
+    run_path.mkdir()
+    (run_path / "run.json").write_text(json.dumps({**RELEASED_RUN_JSON, "created_at": created_at}))
+
+    # Act
+    actual = RunDirectory(run_path).read_metadata()
+
+    # Assert
+    assert isinstance(actual, LegacyRunMetadata)
+    assert actual.created_at == datetime.fromisoformat(created_at)
+
+
+def test_migrating_released_metadata_preserves_history(temp_dir: Path) -> None:
+    # Arrange
+    run_path = temp_dir / "migrate-run"
+    run_path.mkdir()
+    (run_path / "run.json").write_text(json.dumps(RELEASED_RUN_JSON))
+    run_dir = RunDirectory(run_path)
+    legacy = run_dir.read_metadata()
+    assert isinstance(legacy, LegacyRunMetadata)
+
+    # Act
+    migrated = run_dir.migrate_released_metadata(legacy, SOLVE_CONFIGURATION)
+
+    # Assert
+    assert json.loads((run_path / "run.json").read_text()) == {
+        "schema_version": 2,
+        "model": "claude-sonnet-4-5",
+        "git_hash": "released-sha",
+        "solve_configuration": SOLVE_CONFIGURATION,
+        "test_set": 1,
+        "notes": "released run",
+        "dataset_path": None,
+        "created_at": "2026-01-02T03:04:05",
+    }
+    assert run_dir.read_metadata() == migrated
+
+
+def test_metadata_round_trips_dataset_path() -> None:
+    # Arrange
+    metadata = RunMetadata(
+        model="m",
+        git_hash="g",
+        solve_configuration=SOLVE_CONFIGURATION,
+        dataset_path="../SpreadsheetBench/data/spreadsheetbench-v2/Template",
+    )
+
+    # Act
+    document = metadata.model_dump(mode="json")
+
+    # Assert
+    assert document["dataset_path"].endswith("Template")
+    assert RunMetadata.model_validate(document).dataset_path == metadata.dataset_path
+
+
+def test_migrating_released_metadata_without_dataset_path_records_none(temp_dir: Path) -> None:
+    # Arrange
+    run_path = temp_dir / "unbound-run"
+    run_path.mkdir()
+    (run_path / "run.json").write_text(json.dumps(RELEASED_RUN_JSON))
+    run_dir = RunDirectory(run_path)
+    legacy = run_dir.read_metadata()
+    assert isinstance(legacy, LegacyRunMetadata)
+
+    # Act
+    migrated = run_dir.migrate_released_metadata(legacy, SOLVE_CONFIGURATION)
+
+    # Assert
+    assert migrated.dataset_path is None
+
+
+def test_binding_check_accepts_match_and_legacy(tmp_path: Path) -> None:
+    # Arrange
+    dataset = tmp_path / "Financial_Model"
+    dataset.mkdir()
+
+    # Act / Assert
+    check_dataset_binding(str(dataset), dataset)
+    check_dataset_binding(None, dataset)
+
+
+def test_binding_check_rejects_mismatch(tmp_path: Path) -> None:
+    # Arrange
+    recorded = tmp_path / "Financial_Model"
+    requested = tmp_path / "Template"
+    recorded.mkdir()
+    requested.mkdir()
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="Template"):
+        check_dataset_binding(str(recorded), requested)

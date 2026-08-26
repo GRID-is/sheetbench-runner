@@ -35,6 +35,7 @@ Point the runner at a SpreadsheetBench dataset directory and an output directory
 sheetbench-runner \
   --dataset data/spreadsheetbench_verified_400/ \
   --run-dir data/runs/2026-02-05-my-run \
+  --solve-profile profiles/anthropic-profile.json \
   --concurrency 10
 ```
 
@@ -45,10 +46,15 @@ sheetbench-runner \
   --dataset data/spreadsheetbench_verified_400/ \
   --run-dir data/runs/2026-02-05-my-run \
   --task-file task-sets/all_verified_tasks.txt \
+  --solve-profile profiles/anthropic-profile.json \
   --concurrency 10
 ```
 
-Runs are **resumable** — if interrupted, re-running the same command skips already-completed tasks and retries any that failed due to transient errors (5xx, timeouts).
+Runs are **resumable** — if interrupted, re-running the same command skips
+already-completed tasks and retries any that failed due to transient errors
+(5xx, timeouts). Resume with the same solve profile: the runner compares the
+profile's configuration and default model with the run metadata before it
+contacts the server.
 
 ### SpreadsheetBench v2 datasets
 
@@ -144,21 +150,24 @@ downward flips.
 ```
 Usage: sheetbench-runner [OPTIONS]
 
+  Parallel inference runner for SpreadsheetBench with inline evaluation.
+
 Options:
-  --dataset PATH         Path to SpreadsheetBench dataset directory
-                         (containing dataset.json)  [required]
-  --run-dir PATH         Directory to store results (creates if missing,
-                         resumes if exists)  [required]
-  --task-ids TEXT        Comma-separated list of specific task IDs to run
-  --task-file PATH       File with task IDs to run (one per line)
-  --config PATH          Path to config.toml file
-  --infuser-url TEXT     Override infuser URL from config
-  --concurrency INTEGER  Number of parallel tasks (default: 4)
-  --timeout INTEGER      Timeout per task in seconds (default: 3600)
-  -v, --verbose          Enable verbose logging
-  --reevaluate           Re-evaluate all tasks that have output files (useful
-                         after parser fixes)
-  --help                 Show this message and exit.
+  --dataset PATH           Path to SpreadsheetBench dataset directory
+                           (containing dataset.json)  [required]
+  --run-dir PATH           Directory to store results (creates if missing,
+                           resumes if exists)  [required]
+  --task-ids TEXT          Comma-separated list of specific task IDs to run
+  --task-file PATH         File with task IDs to run (one per line)
+  --config PATH            Path to config.toml file
+  --solve-server-url TEXT  Override solve server URL from config
+  --solve-profile FILE     Solve profile JSON file
+  --concurrency INTEGER    Number of parallel tasks (default: 4)
+  --timeout INTEGER        Timeout per task in seconds (default: 3600)
+  -v, --verbose            Enable verbose logging
+  --reevaluate             Re-evaluate all tasks that have output files
+                           (useful after parser fixes)
+  --help                   Show this message and exit.
 ```
 
 ## Configuration
@@ -166,15 +175,36 @@ Options:
 Copy `config.example.toml` to `config.toml` and adjust as needed:
 
 ```toml
-[infuser]
+[solve]
 url = "http://localhost:3000"
+profile = "profiles/anthropic-profile.json"
 
 [runner]
 concurrency = 4
 timeout_seconds = 3600
 ```
 
-CLI options (`--infuser-url`, `--concurrency`, `--timeout`) override their config file equivalents.
+CLI options (`--solve-server-url`, `--solve-profile`, `--concurrency`, `--timeout`)
+override their config file equivalents.
+
+The solve profile is JSON containing `models` and `modelRoles`. Each model's `apiKeyEnv` names the environment variable that holds
+its API key. Models may share an environment variable or name different
+variables. The runner reads those variables and sends each key with the context
+request as that model's `apiKey`.
+
+Two standard profiles are checked in:
+
+| Profile | Transport | Model | Environment variable |
+| --- | --- | --- | --- |
+| `profiles/anthropic-profile.json` | `anthropic` | `claude-sonnet-5` | `ANTHROPIC_API_KEY` |
+| `profiles/openai-profile.json` | `openai-responses` | `gpt-5.2` | `OPENAI_API_KEY` |
+
+For every non-reevaluation invocation, the runner creates one ephemeral solve
+context before running tasks, uses it for all workbook uploads and solves, and
+deletes it on exit. Run metadata records the profile's configuration, which the
+runner compares against the profile on resume. A pure `--reevaluate` run makes
+no server requests, does not require a solve profile, and does not rewrite
+`run.json`.
 
 ## Output
 
@@ -182,7 +212,7 @@ A run directory contains:
 
 ```
 run-dir/
-├── run.json                  # Run metadata (model, config, timestamp)
+├── run.json                  # Run metadata
 ├── results.json              # Task results sorted by task_id
 ├── run.log                   # Execution log
 ├── 13-1-output.xlsx          # Output workbook for task 13-1
@@ -202,6 +232,7 @@ Each entry in `results.json` records the task outcome, timing, and token usage:
   "tool_calls": 8,
   "input_tokens": 12500,
   "output_tokens": 3200,
+  "input_file": "spreadsheet/13-1/1_13-1_init.xlsx",
   "output_file": "13-1-output.xlsx",
   "transcript_file": "13-1-transcript.json",
   "result": "pass",

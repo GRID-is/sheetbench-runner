@@ -1,10 +1,35 @@
 """Run directory management for SpreadsheetBench results."""
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 from .entities import RunMetadata, TaskResult, TaskStatus
+from .solve_profile import SolveConfiguration
+
+
+class RunMetadataError(ValueError):
+    """run.json could not be decoded as a supported format."""
+
+
+class LegacyRunMetadata(BaseModel):
+    """A released-format run.json awaiting migration to the canonical schema."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    model: str
+    git_hash: str = "unknown"
+    test_set: int | None = None
+    notes: str = ""
+    dataset_path: str | None = None
+    created_at: datetime = Field(default_factory=datetime.now)
+
+    def to_canonical(self, solve_configuration: SolveConfiguration) -> RunMetadata:
+        """Build canonical metadata, keeping the historical run's own record."""
+        return RunMetadata(**self.model_dump(), solve_configuration=solve_configuration)
 
 
 class RunDirectory:
@@ -48,10 +73,7 @@ class RunDirectory:
             metadata: Metadata to write to run.json
         """
         self.path.mkdir(parents=True, exist_ok=True)
-
-        # Write run.json
-        with open(self.run_json_path, "w") as f:
-            json.dump(metadata.to_dict(), f, indent=2)
+        self.run_json_path.write_text(json.dumps(metadata.model_dump(mode="json"), indent=2))
 
         # Initialize results.json only if it doesn't exist
         if not self.results_path.exists():
@@ -114,10 +136,37 @@ class RunDirectory:
         with open(self.results_path, "w") as f:
             json.dump(results_list, f, indent=2)
 
-    def load_metadata(self) -> RunMetadata | None:
-        """Load run metadata from run.json if it exists."""
+    def write_metadata(self, metadata: RunMetadata) -> None:
+        """Write canonical metadata to run.json."""
+        self.run_json_path.write_text(json.dumps(metadata.model_dump(mode="json"), indent=2))
+
+    def read_metadata(self) -> RunMetadata | LegacyRunMetadata | None:
+        """Decode run.json as canonical or released metadata, or raise RunMetadataError."""
         if not self.run_json_path.exists():
             return None
-        with open(self.run_json_path) as f:
-            data = json.load(f)
-        return RunMetadata.from_dict(data)
+        try:
+            data: object = json.loads(self.run_json_path.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            raise RunMetadataError(f"Could not read {self.run_json_path}") from e
+        if not isinstance(data, dict):
+            raise RunMetadataError(f"{self.run_json_path} is not a JSON object")
+
+        if "solve_configuration" in data:
+            try:
+                return RunMetadata.model_validate(data)
+            except ValidationError as e:
+                raise RunMetadataError(
+                    f"{self.run_json_path} is not valid canonical metadata"
+                ) from e
+        try:
+            return LegacyRunMetadata.model_validate(data)
+        except ValidationError as e:
+            raise RunMetadataError(f"{self.run_json_path} is not valid released metadata") from e
+
+    def migrate_released_metadata(
+        self, legacy: LegacyRunMetadata, solve_configuration: SolveConfiguration
+    ) -> RunMetadata:
+        """Rewrite a released-format run.json as canonical metadata."""
+        metadata = legacy.to_canonical(solve_configuration)
+        self.write_metadata(metadata)
+        return metadata

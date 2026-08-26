@@ -3,7 +3,11 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, StrictInt
+
+from .solve_profile import SolveConfiguration
 
 
 class TaskStatus(StrEnum):
@@ -23,8 +27,7 @@ class InstructionType(StrEnum):
     SHEET_LEVEL = "Sheet-Level Manipulation"
 
 
-@dataclass(frozen=True)
-class Task:
+class Task(BaseModel):
     """
     A task from a SpreadsheetBench dataset.
 
@@ -41,6 +44,8 @@ class Task:
     A present ``golden_response_path`` marks a task as v2.
     """
 
+    model_config = ConfigDict(frozen=True, coerce_numbers_to_str=True)
+
     id: str
     instruction: str
     spreadsheet_path: str
@@ -49,20 +54,6 @@ class Task:
     answer_sheet: str | None = None
     data_position: str | None = None
     golden_response_path: str | None = None
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Task":
-        """Create a Task from a dataset.json entry."""
-        return cls(
-            id=str(data["id"]),
-            instruction=data["instruction"],
-            spreadsheet_path=data["spreadsheet_path"],
-            answer_position=data["answer_position"],
-            instruction_type=data.get("instruction_type"),
-            answer_sheet=data.get("answer_sheet"),
-            data_position=data.get("data_position"),
-            golden_response_path=data.get("golden_response_path"),
-        )
 
     @property
     def input_relpath(self) -> str:
@@ -83,27 +74,15 @@ class Task:
         return f"spreadsheet/{self.id}/1_{self.id}_golden.xlsx"
 
 
-@dataclass(frozen=True)
-class InfuserUsage:
-    """Usage statistics from an infuser API response."""
+class SolveUsage(BaseModel):
+    """Usage statistics from a solve response."""
 
-    turns: int
-    tool_calls: int
-    input_tokens: int
-    output_tokens: int
-    planning_turns: int | None = None
-    planning_tool_calls: int | None = None
+    model_config = ConfigDict(frozen=True)
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "InfuserUsage":
-        return cls(
-            turns=data["turns"],
-            tool_calls=data["tool_calls"],
-            input_tokens=data["input_tokens"],
-            output_tokens=data["output_tokens"],
-            planning_turns=data.get("planning_turns"),
-            planning_tool_calls=data.get("planning_tool_calls"),
-        )
+    turns: NonNegativeInt
+    tool_calls: NonNegativeInt
+    input_tokens: NonNegativeInt
+    output_tokens: NonNegativeInt
 
 
 @dataclass(frozen=True)
@@ -135,6 +114,7 @@ class TaskResult:
     tool_calls: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    input_file: str | None = None
     transcript_file: str | None = None
     output_file: str | None = None
     result: str | None = None  # "pass" | "fail"
@@ -154,6 +134,8 @@ class TaskResult:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
         }
+        if self.input_file:
+            d["input_file"] = self.input_file
         if self.transcript_file:
             d["transcript_file"] = self.transcript_file
         if self.output_file:
@@ -171,47 +153,19 @@ class TaskResult:
         return d
 
 
-@dataclass(frozen=True)
-class RunMetadata:
-    """Metadata about a test run, stored in run.json."""
+class RunMetadata(BaseModel):
+    """Canonical run.json metadata."""
 
-    model: str
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal[2] = 2
+    model: Annotated[str, Field(min_length=1)]
     git_hash: str
-    infuser_config: dict[str, Any]
-    test_set: int | None = None
+    solve_configuration: SolveConfiguration
+    test_set: StrictInt | None = None
     notes: str = ""
     # Dataset directory this run was created against. Task ids overlap across
     # v2 categories, so regrading against the wrong dataset silently grades
     # against the wrong goldens; recording the binding lets tooling validate.
     dataset_path: str | None = None
-    created_at: datetime = field(default_factory=datetime.now)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to run.json format."""
-        return {
-            "model": self.model,
-            "git_hash": self.git_hash,
-            "infuser_config": self.infuser_config,
-            "test_set": self.test_set,
-            "notes": self.notes,
-            "dataset_path": self.dataset_path,
-            "created_at": self.created_at.isoformat(),
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "RunMetadata":
-        created_at = data.get("created_at")
-        if isinstance(created_at, str):
-            created_at = datetime.fromisoformat(created_at)
-        elif created_at is None:
-            created_at = datetime.now()
-
-        return cls(
-            model=data.get("model", "unknown"),
-            git_hash=data.get("git_hash", "unknown"),
-            infuser_config=data.get("infuser_config", {}),
-            test_set=data.get("test_set"),
-            notes=data.get("notes", ""),
-            dataset_path=data.get("dataset_path"),
-            created_at=created_at,
-        )
+    created_at: datetime = Field(default_factory=datetime.now)

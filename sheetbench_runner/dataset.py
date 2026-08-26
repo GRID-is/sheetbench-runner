@@ -30,7 +30,7 @@ class Dataset:
         with open(dataset_file) as f:
             raw_tasks = json.load(f)
 
-        self._tasks = [Task.from_dict(t) for t in raw_tasks]
+        self._tasks = [Task.model_validate(t) for t in raw_tasks]
 
     @property
     def all_tasks(self) -> list[Task]:

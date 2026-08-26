@@ -1,0 +1,12 @@
+{
+  "models": {
+    "default": {
+      "transport": "openai-responses",
+      "model": "gpt-5.2",
+      "apiKeyEnv": "OPENAI_API_KEY"
+    }
+  },
+  "modelRoles": {
+    "default": "default"
+  }
+}
