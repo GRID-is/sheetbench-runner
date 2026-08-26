@@ -16,7 +16,14 @@ from sheetbench_runner.run_directory import (
 from sheetbench_runner.runner import check_dataset_binding
 
 SOLVE_CONFIGURATION: dict[str, Any] = {
-    "models": {"default": {"transport": "anthropic", "model": "claude-sonnet-5", "options": None}},
+    "models": {
+        "default": {
+            "transport": "anthropic",
+            "model": "claude-sonnet-5",
+            "apiKeyEnv": "ANTHROPIC_API_KEY",
+            "options": None,
+        }
+    },
     "modelRoles": {"default": "default"},
     "ttlSeconds": 86400,
 }

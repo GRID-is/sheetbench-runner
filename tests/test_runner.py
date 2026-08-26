@@ -31,13 +31,14 @@ PROFILE: dict[str, Any] = {
     },
     "modelRoles": {"default": "primary"},
 }
-SANITIZED_MODEL: dict[str, object] = {
+PROFILE_MODEL: dict[str, object] = {
     "transport": "openai-compatible",
     "model": "opaque-model",
+    "apiKeyEnv": "OPAQUE_ENV",
     "options": None,
 }
-SANITIZED_CONFIGURATION = {
-    "models": {"primary": SANITIZED_MODEL},
+PROFILE_CONFIGURATION = {
+    "models": {"primary": PROFILE_MODEL},
     "modelRoles": {"default": "primary"},
     "ttlSeconds": 86400,
 }
@@ -54,7 +55,7 @@ def canonical_run_json(**overrides: Any) -> str:
         "schema_version": 2,
         "model": "opaque-model",
         "git_hash": "old",
-        "solve_configuration": SANITIZED_CONFIGURATION,
+        "solve_configuration": PROFILE_CONFIGURATION,
         "test_set": None,
         "notes": "",
         "created_at": "2026-01-02T03:04:05",
@@ -88,7 +89,7 @@ def context_routes() -> tuple[respx.Route, respx.Route, respx.Route]:
             json={
                 "id": CONTEXT_TOKEN,
                 "expiresAt": (datetime.now(UTC) + timedelta(seconds=86400)).isoformat(),
-                "configuration": SANITIZED_CONFIGURATION,
+                "configuration": PROFILE_CONFIGURATION,
             },
         )
     )
@@ -129,7 +130,7 @@ async def test_run_creates_and_deletes_exactly_once_and_stores_profile_metadata(
     run_data = json.loads((run_dir / "run.json").read_text())
     assert run_data["schema_version"] == 2
     assert run_data["model"] == "opaque-model"
-    assert run_data["solve_configuration"] == SANITIZED_CONFIGURATION
+    assert run_data["solve_configuration"] == PROFILE_CONFIGURATION
 
 
 @respx.mock
@@ -300,7 +301,7 @@ async def test_matching_resume_creates_context_and_skips_completed_tasks(
     "historical_metadata",
     [
         {"model": "different-model"},
-        {"solve_configuration": {**SANITIZED_CONFIGURATION, "ttlSeconds": 601}},
+        {"solve_configuration": {**PROFILE_CONFIGURATION, "ttlSeconds": 601}},
     ],
     ids=["model", "configuration"],
 )
@@ -372,7 +373,7 @@ async def test_released_run_is_migrated_to_canonical_metadata_after_context_crea
         "schema_version": 2,
         "model": "opaque-model",
         "git_hash": "released-sha",
-        "solve_configuration": SANITIZED_CONFIGURATION,
+        "solve_configuration": PROFILE_CONFIGURATION,
         "test_set": 1,
         "notes": "released run",
         "dataset_path": None,
@@ -456,7 +457,7 @@ async def test_real_legacy_run_without_infuser_config_is_migrated(
     assert migrated["schema_version"] == 2
     assert migrated["model"] == "opaque-model"
     assert migrated["git_hash"] == "abc0001"
-    assert migrated["solve_configuration"] == SANITIZED_CONFIGURATION
+    assert migrated["solve_configuration"] == PROFILE_CONFIGURATION
     assert migrated["test_set"] is None
     assert migrated["notes"] == ""
 

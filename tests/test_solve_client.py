@@ -29,7 +29,7 @@ SOLVE_PROFILE = SolveConfiguration.model_validate(
     }
 )
 CONTEXT_TOKEN = "solve-context-token"
-SANITIZED_PRIMARY_MODEL = {"transport": "openai-compatible", "model": "opaque-model"}
+PAYLOAD_MODEL = {"transport": "openai-compatible", "model": "opaque-model"}
 
 
 def context_response(*, token: object = CONTEXT_TOKEN) -> dict[str, object]:
@@ -97,7 +97,7 @@ async def test_context_lifecycle_uses_contract_headers_and_bodies(tmp_path: Path
     creation = create_route.calls[0].request
     assert "X-Solve-Context" not in creation.headers
     assert json.loads(creation.content) == {
-        "models": {"primary": {**SANITIZED_PRIMARY_MODEL, "apiKey": "test-key"}},
+        "models": {"primary": {**PAYLOAD_MODEL, "apiKey": "test-key"}},
         "modelRoles": {"default": "primary"},
     }
     for route in (upload_route, solve_route, delete_route):

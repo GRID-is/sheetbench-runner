@@ -30,28 +30,23 @@ class ModelOptions(BaseModel):
     maxOutputTokens: StrictInt | None = None
 
 
-class SanitizedModel(BaseModel):
-    """A configured model without any reference to its API key."""
+class ProfileModel(BaseModel):
+    """A configured model and the environment variable holding its API key."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     transport: Literal["anthropic", "openai-responses", "openai-compatible"]
     model: str
+    apiKeyEnv: str
     options: ModelOptions | None = None
 
 
-class ProfileModel(SanitizedModel):
-    """A configured model that names the environment variable holding its API key."""
-
-    apiKeyEnv: str
-
-
-class SanitizedConfiguration(BaseModel):
-    """A solve configuration that carries no API-key material."""
+class SolveConfiguration(BaseModel):
+    """A solve configuration as a profile file declares it."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    models: Annotated[Mapping[str, SanitizedModel], Field(min_length=1)]
+    models: Annotated[Mapping[str, ProfileModel], Field(min_length=1)]
     modelRoles: Annotated[dict[str, str], Field(min_length=1)]
     ttlSeconds: StrictInt | None = None
 
@@ -65,18 +60,11 @@ class SanitizedConfiguration(BaseModel):
         return self
 
 
-class SolveConfiguration(SanitizedConfiguration):
-    """A solve configuration as a profile file declares it."""
-
-    models: Annotated[Mapping[str, ProfileModel], Field(min_length=1)]
-
-
 @dataclass(frozen=True)
 class SolveProfile:
     """A validated profile that resolves API keys on demand."""
 
     configuration: SolveConfiguration
-    sanitized_configuration: SanitizedConfiguration
     default_model: str
 
     def resolve_api_keys(self) -> dict[str, str]:
@@ -90,13 +78,6 @@ class SolveProfile:
                 )
             api_keys[name] = value
         return api_keys
-
-
-def sanitized_configuration(profile: SolveConfiguration) -> SanitizedConfiguration:
-    """Derive the server-visible configuration from a profile."""
-    return SanitizedConfiguration.model_validate(
-        profile.model_dump(exclude={"models": {"__all__": {"apiKeyEnv"}}})
-    )
 
 
 def load_solve_profile(path: Path) -> SolveProfile:
@@ -116,4 +97,4 @@ def load_solve_profile(path: Path) -> SolveProfile:
     if configuration.ttlSeconds is None:
         configuration = configuration.model_copy(update={"ttlSeconds": DEFAULT_CONTEXT_TTL_SECONDS})
     default_model = configuration.models[configuration.modelRoles["default"]].model
-    return SolveProfile(configuration, sanitized_configuration(configuration), default_model)
+    return SolveProfile(configuration, default_model)

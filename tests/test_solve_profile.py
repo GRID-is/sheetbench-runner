@@ -194,21 +194,13 @@ def test_loading_a_profile_does_not_resolve_api_keys(
     # Arrange
     monkeypatch.delenv("FIRST_KEY", raising=False)
     monkeypatch.delenv("SECOND_KEY", raising=False)
-    expected_sanitized = {
-        "models": {
-            "primary": {"transport": "anthropic", "model": "model-v9"},
-            "reviewer": {"transport": "openai-responses", "model": "review-model"},
-        },
-        "modelRoles": {"default": "primary", "review": "reviewer"},
-        "ttlSeconds": 900,
-    }
 
     # Act
     profile = load_solve_profile(write_profile(tmp_path / "profile.json"))
 
     # Assert
     assert profile.default_model == "model-v9"
-    assert profile.sanitized_configuration.model_dump(exclude_none=True) == expected_sanitized
+    assert profile.configuration.model_dump(exclude_none=True) == PROFILE
 
 
 @pytest.mark.parametrize(

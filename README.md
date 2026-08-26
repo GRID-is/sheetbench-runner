@@ -53,8 +53,8 @@ sheetbench-runner \
 Runs are **resumable** — if interrupted, re-running the same command skips
 already-completed tasks and retries any that failed due to transient errors
 (5xx, timeouts). Resume with the same solve profile: the runner compares the
-profile's sanitized configuration and default model with the run metadata
-before it contacts the server.
+profile's configuration and default model with the run metadata before it
+contacts the server.
 
 ### SpreadsheetBench v2 datasets
 
@@ -206,11 +206,9 @@ whole invocation. The context is still deleted immediately when the invocation e
 
 For every non-reevaluation invocation, the runner creates one ephemeral solve
 context before running tasks, uses it for all workbook uploads and solves, and
-deletes it on exit. API key values and the context ID remain in process memory
-and are never written to run artifacts. Run metadata stores only the server's
-sanitized configuration (`transport`, `model`, and optional `options` per model),
-so neither `apiKey` nor `apiKeyEnv` is persisted. A pure `--reevaluate` run makes
-no server requests, does not require a solve profile, and never rewrites
+deletes it on exit. Run metadata records the profile's configuration, which the
+runner compares against the profile on resume. A pure `--reevaluate` run makes
+no server requests, does not require a solve profile, and does not rewrite
 `run.json`.
 
 ### Released legacy runs

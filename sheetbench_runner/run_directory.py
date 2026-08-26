@@ -10,7 +10,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .entities import RunMetadata, TaskResult, TaskStatus
-from .solve_profile import SanitizedConfiguration
+from .solve_profile import SolveConfiguration
 
 
 class RunMetadataError(ValueError):
@@ -68,7 +68,7 @@ class LegacyRunMetadata(BaseModel):
                 pass
         return datetime.now()
 
-    def to_canonical(self, solve_configuration: SanitizedConfiguration) -> RunMetadata:
+    def to_canonical(self, solve_configuration: SolveConfiguration) -> RunMetadata:
         """Build canonical metadata, keeping the historical run's own record."""
         return RunMetadata(**self.model_dump(), solve_configuration=solve_configuration)
 
@@ -216,7 +216,7 @@ class RunDirectory:
             raise RunMetadataError(f"{self.run_json_path} is not valid released metadata") from e
 
     def migrate_released_metadata(
-        self, legacy: LegacyRunMetadata, solve_configuration: SanitizedConfiguration
+        self, legacy: LegacyRunMetadata, solve_configuration: SolveConfiguration
     ) -> RunMetadata:
         """Rewrite a released-format run.json as canonical metadata."""
         metadata = legacy.to_canonical(solve_configuration)

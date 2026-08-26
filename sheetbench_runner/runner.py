@@ -499,7 +499,7 @@ async def run(
 
     if isinstance(existing_metadata, RunMetadata):
         if (
-            existing_metadata.solve_configuration != solve_profile.sanitized_configuration
+            existing_metadata.solve_configuration != solve_profile.configuration
             or existing_metadata.model != solve_profile.default_model
         ):
             raise SolveProfileError(
@@ -523,9 +523,7 @@ async def run(
 
             if isinstance(existing_metadata, LegacyRunMetadata):
                 logger.info(f"Migrating released run metadata at {run_dir_path}")
-                run_dir.migrate_released_metadata(
-                    existing_metadata, solve_profile.sanitized_configuration
-                )
+                run_dir.migrate_released_metadata(existing_metadata, solve_profile.configuration)
             elif existing_metadata is None:
                 logger.info(f"Creating run metadata at {run_dir_path}")
                 status: dict[str, object] = {}
@@ -539,7 +537,7 @@ async def run(
                     RunMetadata(
                         model=solve_profile.default_model,
                         git_hash=git_hash,
-                        solve_configuration=solve_profile.sanitized_configuration,
+                        solve_configuration=solve_profile.configuration,
                         notes=run_dir_path.name,
                         dataset_path=str(dataset_path.resolve()),
                     )

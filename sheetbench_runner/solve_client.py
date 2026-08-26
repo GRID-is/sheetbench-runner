@@ -44,14 +44,14 @@ _ERROR_TEXT_MAX_LENGTH = 200
 async def handle_http_errors(
     operation: str,
     *,
-    context_protected: bool = False,
+    uses_context: bool = False,
 ) -> AsyncIterator[None]:
     """Handle HTTP errors consistently across all operations."""
     try:
         yield
     except httpx.HTTPStatusError as e:
         detail = f": {e.response.text[:_ERROR_TEXT_MAX_LENGTH]}"
-        if context_protected and e.response.status_code == 401:
+        if uses_context and e.response.status_code == 401:
             raise SolveContextExpiredError(
                 f"{operation} failed because solve context expired"
             ) from e
@@ -235,7 +235,7 @@ class SolveClient:
             RetryableSolveError: For 5xx errors, timeouts, connection failures
             NonRetryableSolveError: For 4xx errors
         """
-        async with handle_http_errors("Upload", context_protected=True):
+        async with handle_http_errors("Upload", uses_context=True):
             with open(filepath, "rb") as f:
                 files = {
                     "file": (
@@ -279,7 +279,7 @@ class SolveClient:
             "messages": [{"role": "user", "content": prompt}],
         }
 
-        async with handle_http_errors("Solve", context_protected=True):
+        async with handle_http_errors("Solve", uses_context=True):
             response = await self.client.post(
                 f"{self.base_url}/solve",
                 json=payload,

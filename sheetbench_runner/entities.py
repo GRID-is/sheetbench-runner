@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, StrictInt
 
-from .solve_profile import SanitizedConfiguration
+from .solve_profile import SolveConfiguration
 
 
 class TaskStatus(StrEnum):
@@ -160,7 +160,7 @@ class RunMetadata(BaseModel):
     schema_version: Literal[2] = 2
     model: Annotated[str, Field(min_length=1)]
     git_hash: str
-    solve_configuration: SanitizedConfiguration
+    solve_configuration: SolveConfiguration
     test_set: StrictInt | None = None
     notes: str = ""
     # Dataset directory this run was created against. Task ids overlap across
