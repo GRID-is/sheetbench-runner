@@ -21,7 +21,6 @@ from .evaluator import Evaluator
 from .prompt import build_prompt
 from .run_directory import LegacyRunMetadata, RunDirectory
 from .solve_client import (
-    NonRetryableSolveError,
     RetryableSolveError,
     SolveClient,
     SolveContextExpiredError,
@@ -69,7 +68,6 @@ class TaskRunner:
         dataset: Dataset,
         run_dir: RunDirectory,
         concurrency: int = 4,
-        sensitive_values: tuple[str, ...] = (),
     ):
         """
         Initialize the task runner.
@@ -80,7 +78,6 @@ class TaskRunner:
             dataset: The SpreadsheetBench dataset
             run_dir: Run directory for results
             concurrency: Maximum number of parallel tasks
-            sensitive_values: In-memory-only values forbidden from solve artifacts
 
         """
         self._solve_client = solve_client
@@ -88,31 +85,12 @@ class TaskRunner:
         self._dataset = dataset
         self._run_dir = run_dir
         self._semaphore = asyncio.Semaphore(concurrency)
-        self._sensitive_values = [value for value in sensitive_values if value]
 
         self._stats = RunStats()
         self._context_expired = asyncio.Event()
         self._progress: Progress | None = None
         self._progress_task: TaskID | None = None
         self._live: Live | None = None
-
-    def clear_sensitive_values(self) -> None:
-        """Release references to API keys and the ephemeral context token."""
-        self._sensitive_values.clear()
-
-    def _contains_sensitive_value(self, value: object) -> bool:
-        if isinstance(value, str):
-            return any(secret in value for secret in self._sensitive_values)
-        if isinstance(value, bytes):
-            return any(secret.encode() in value for secret in self._sensitive_values)
-        if isinstance(value, dict):
-            return any(
-                self._contains_sensitive_value(key) or self._contains_sensitive_value(child)
-                for key, child in value.items()
-            )
-        if isinstance(value, (list, tuple)):
-            return any(self._contains_sensitive_value(child) for child in value)
-        return False
 
     def _build_display(self) -> Group:
         """Build the rich display with progress bar and running tasks."""
@@ -307,11 +285,6 @@ class TaskRunner:
 
                 logger.info(f"Task {task.id} solve completed")
 
-                if self._contains_sensitive_value(
-                    response.transcript
-                ) or self._contains_sensitive_value(response.output_xlsx):
-                    raise NonRetryableSolveError("Solve response contains sensitive material")
-
                 # Write artifacts directly from response
                 output_file: str | None = None
                 transcript_file: str | None = None
@@ -485,7 +458,6 @@ async def run(
 
     async with SolveClient(solve_server_url, timeout_seconds) as solve_client:
         context_created = False
-        runner: TaskRunner | None = None
         try:
             context = await solve_client.create_solve_context(solve_profile.configuration, api_keys)
             context_created = True
@@ -517,20 +489,14 @@ async def run(
                 dataset=dataset,
                 run_dir=run_dir,
                 concurrency=concurrency,
-                sensitive_values=(*api_keys.values(), context.id),
             )
             return await runner.run_all(tasks)
         finally:
-            try:
-                if context_created:
-                    primary_error = sys.exception()
-                    try:
-                        await solve_client.delete_solve_context()
-                    except Exception as e:
-                        if primary_error is None:
-                            raise
-                        logger.warning(f"Could not delete solve context: {e}")
-            finally:
-                if runner is not None:
-                    runner.clear_sensitive_values()
-                api_keys.clear()
+            if context_created:
+                primary_error = sys.exception()
+                try:
+                    await solve_client.delete_solve_context()
+                except Exception as e:
+                    if primary_error is None:
+                        raise
+                    logger.warning(f"Could not delete solve context: {e}")

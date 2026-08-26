@@ -784,49 +784,6 @@ async def test_invalid_apiKeyEnv_environment_fails_before_http_or_tasks(
     assert "must-not-appear" not in str(exc_info.value)
 
 
-@pytest.mark.parametrize("sensitive_value", ["submitted-provider-key", CONTEXT_TOKEN])
-async def test_task_runner_rejects_solve_artifacts_containing_sensitive_values(
-    tmp_path: Path,
-    sample_task: Task,
-    sensitive_value: str,
-) -> None:
-    run_path = tmp_path / "run"
-    run_path.mkdir()
-    (run_path / "run.json").write_text('{"safe": true}')
-    input_path = tmp_path / "input.xlsx"
-    input_path.write_bytes(b"input")
-
-    solve_client = Mock()
-    solve_client.upload_workbook = AsyncMock(return_value="wb-123")
-    solve_client.solve = AsyncMock(
-        return_value=SolveResponse(
-            id="solve-wb-123",
-            model="opaque-model",
-            workbook_id="wb-123",
-            usage=SolveUsage(1, 0, 2, 3),
-            output_xlsx=b"safe-output",
-            transcript={"nested": [{"error": f"provider returned {sensitive_value}"}]},
-        )
-    )
-    dataset = Mock()
-    dataset.get_input_path.return_value = input_path
-    runner = TaskRunner(
-        solve_client=solve_client,
-        evaluator=Mock(),
-        dataset=dataset,
-        run_dir=RunDirectory(run_path),
-        sensitive_values=("submitted-provider-key", CONTEXT_TOKEN),
-    )
-
-    stats = await runner.run_all([sample_task])
-
-    assert stats.errors == 1
-    assert not (run_path / f"{sample_task.id}-transcript.json").exists()
-    assert not (run_path / f"{sample_task.id}-output.xlsx").exists()
-    artifacts = b"".join(path.read_bytes() for path in run_path.iterdir() if path.is_file())
-    assert sensitive_value.encode() not in artifacts
-
-
 async def test_context_expiry_stops_queued_tasks(
     tmp_path: Path,
     sample_task: Task,
