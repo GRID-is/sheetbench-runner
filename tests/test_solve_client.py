@@ -895,3 +895,23 @@ async def test_grid_api_key_never_installs_authorization_header(
 
     for route in (status_route, create_route, upload_route, solve_route, delete_route):
         assert "Authorization" not in route.calls[0].request.headers
+
+
+@pytest.mark.parametrize(
+    "transport_failure",
+    [
+        httpx.RemoteProtocolError("Server disconnected without sending a response"),
+        httpx.ReadError("Connection reset by peer"),
+    ],
+    ids=["disconnected", "reset"],
+)
+@respx.mock
+async def test_solve_transport_failures_are_retryable(transport_failure: Exception) -> None:
+    # Arrange
+    respx.post("http://localhost:3000/solve").mock(side_effect=transport_failure)
+
+    # Act and assert
+    async with SolveClient("http://localhost:3000") as client:
+        await activate_context(client)
+        with pytest.raises(RetryableSolveError, match="Connection error"):
+            await client.solve("wb-123", "Test prompt")

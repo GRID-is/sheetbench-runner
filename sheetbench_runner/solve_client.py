@@ -71,7 +71,7 @@ async def handle_http_errors(
         if e.response.status_code >= 500:
             raise RetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
         raise NonRetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
-    except (httpx.ConnectError, httpx.TimeoutException) as e:
+    except (httpx.NetworkError, httpx.RemoteProtocolError, httpx.TimeoutException) as e:
         raise RetryableSolveError(f"Connection error: {e}") from e
 
 
