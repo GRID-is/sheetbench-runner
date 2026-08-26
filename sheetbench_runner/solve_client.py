@@ -50,7 +50,9 @@ async def handle_http_errors(operation: str) -> AsyncIterator[None]:
             raise RetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
         raise NonRetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
     except httpx.TimeoutException as e:
-        raise SolveTimeoutError(f"{operation} timed out: {type(e).__name__}") from e
+        if operation == "Solve":
+            raise SolveTimeoutError(f"{operation} timed out: {type(e).__name__}") from e
+        raise RetryableSolveError(f"{operation} timed out: {type(e).__name__}") from e
     except (httpx.NetworkError, httpx.RemoteProtocolError) as e:
         cause = e.__cause__ or e.__context__
         detail = f": {e}" if str(e) else ""

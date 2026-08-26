@@ -12,6 +12,7 @@ from sheetbench_runner.solve_client import (
     NonRetryableSolveError,
     RetryableSolveError,
     SolveClient,
+    SolveTimeoutError,
     handle_http_errors,
 )
 from sheetbench_runner.solve_profile import SolveConfiguration
@@ -298,3 +299,12 @@ async def test_a_transport_failure_names_its_exception_class_and_cause() -> None
 
     # Assert
     assert str(raised.value) == expected
+
+
+async def test_only_a_solve_timeout_counts_as_a_completed_attempt() -> None:
+    with pytest.raises(SolveTimeoutError):
+        async with handle_http_errors("Solve"):
+            raise httpx.ReadTimeout("")
+    with pytest.raises(RetryableSolveError):
+        async with handle_http_errors("Upload"):
+            raise httpx.ReadTimeout("")
