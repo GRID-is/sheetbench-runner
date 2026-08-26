@@ -414,7 +414,7 @@ async def run(
         dataset_path: Path to the SpreadsheetBench dataset
         run_dir_path: Path to the run directory
         solve_server_url: URL of the solve server API
-        solve_profile_path: Path to a non-secret solve profile JSON file
+        solve_profile_path: Path to a solve profile JSON file
 
         tasks: Tasks to run
         concurrency: Number of parallel tasks
@@ -518,12 +518,14 @@ async def run(
     async with SolveClient(solve_server_url, timeout_seconds) as solve_client:
         context_created = False
         try:
-            context = await solve_client.create_solve_context(solve_profile.configuration, api_keys)
+            await solve_client.create_solve_context(solve_profile.configuration, api_keys)
             context_created = True
 
             if isinstance(existing_metadata, LegacyRunMetadata):
                 logger.info(f"Migrating released run metadata at {run_dir_path}")
-                run_dir.migrate_released_metadata(existing_metadata, context.configuration)
+                run_dir.migrate_released_metadata(
+                    existing_metadata, solve_profile.sanitized_configuration
+                )
             elif existing_metadata is None:
                 logger.info(f"Creating run metadata at {run_dir_path}")
                 status: dict[str, object] = {}
@@ -537,7 +539,7 @@ async def run(
                     RunMetadata(
                         model=solve_profile.default_model,
                         git_hash=git_hash,
-                        solve_configuration=context.configuration,
+                        solve_configuration=solve_profile.sanitized_configuration,
                         notes=run_dir_path.name,
                         dataset_path=str(dataset_path.resolve()),
                     )

@@ -155,7 +155,7 @@ class TaskResult:
 class RunMetadata(BaseModel):
     """Canonical run.json metadata."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True)
 
     schema_version: Literal[2] = 2
     model: Annotated[str, Field(min_length=1)]

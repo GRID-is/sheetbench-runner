@@ -161,7 +161,7 @@ Options:
   --task-file PATH         File with task IDs to run (one per line)
   --config PATH            Path to config.toml file
   --solve-server-url TEXT  Override solve server URL from config
-  --solve-profile FILE     Non-secret solve profile JSON file
+  --solve-profile FILE     Solve profile JSON file
   --concurrency INTEGER    Number of parallel tasks (default: 4)
   --timeout INTEGER        Timeout per task in seconds (default: 3600)
   -v, --verbose            Enable verbose logging
@@ -188,13 +188,10 @@ CLI options (`--solve-server-url`, `--solve-profile`, `--concurrency`, `--timeou
 override their config file equivalents.
 
 The solve profile is JSON containing `models`, `modelRoles`, and optional
-`ttlSeconds`. It is non-secret and must not contain API keys or legacy credential
-fields. Each model's required `apiKeyEnv` directly names the environment variable
-containing its API key and must match the portable syntax
-`[A-Za-z_][A-Za-z0-9_]*` (maximum 64 characters). Models may share an environment
-variable or name different variables. The runner resolves each key after the
-non-secret checks pass and submits it inline as that model's `apiKey`; no
-top-level credentials object is sent.
+`ttlSeconds`. Each model's `apiKeyEnv` names the environment variable that holds
+its API key. Models may share an environment variable or name different
+variables. The runner reads those variables and sends each key with the context
+request as that model's `apiKey`.
 
 Two standard profiles are checked in:
 

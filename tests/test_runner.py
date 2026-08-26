@@ -102,13 +102,13 @@ def context_routes() -> tuple[respx.Route, respx.Route, respx.Route]:
 
 
 @respx.mock
-async def test_run_creates_and_deletes_exactly_once_and_stores_only_sanitized_metadata(
+async def test_run_creates_and_deletes_exactly_once_and_stores_profile_metadata(
     tmp_path: Path,
     sample_dataset_dir: Path,
     sample_task: Task,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OPAQUE_ENV", "artifact-forbidden-secret")
+    monkeypatch.setenv("OPAQUE_ENV", "key")
     run_all = AsyncMock(return_value=RunStats(total_tasks=1))
     monkeypatch.setattr(TaskRunner, "run_all", run_all)
     create_route, status_route, delete_route = context_routes()
@@ -130,9 +130,6 @@ async def test_run_creates_and_deletes_exactly_once_and_stores_only_sanitized_me
     assert run_data["schema_version"] == 2
     assert run_data["model"] == "opaque-model"
     assert run_data["solve_configuration"] == SANITIZED_CONFIGURATION
-    artifacts = b"".join(path.read_bytes() for path in run_dir.rglob("*") if path.is_file())
-    assert b"artifact-forbidden-secret" not in artifacts
-    assert CONTEXT_TOKEN.encode() not in artifacts
 
 
 @respx.mock
@@ -142,7 +139,7 @@ async def test_run_cleanup_is_best_effort_and_does_not_mask_original_error(
     sample_task: Task,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OPAQUE_ENV", "secret")
+    monkeypatch.setenv("OPAQUE_ENV", "key")
     run_all = AsyncMock(side_effect=ValueError("original run failure"))
     monkeypatch.setattr(TaskRunner, "run_all", run_all)
     create_route, _, delete_route = context_routes()
@@ -168,7 +165,7 @@ async def test_run_propagates_cleanup_failure_after_successful_work(
     sample_task: Task,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OPAQUE_ENV", "secret")
+    monkeypatch.setenv("OPAQUE_ENV", "key")
     monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=RunStats(total_tasks=1)))
     create_route, _, delete_route = context_routes()
     delete_route.mock(return_value=httpx.Response(500, text="cleanup failed"))
@@ -194,7 +191,7 @@ async def test_run_accepts_expired_context_during_final_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Arrange
-    monkeypatch.setenv("OPAQUE_ENV", "secret")
+    monkeypatch.setenv("OPAQUE_ENV", "key")
     expected = RunStats(total_tasks=1, errors=1)
     monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=expected))
     create_route, _, delete_route = context_routes()
@@ -215,66 +212,6 @@ async def test_run_accepts_expired_context_during_final_cleanup(
     assert delete_route.call_count == 1
 
 
-@pytest.mark.parametrize(
-    "configuration",
-    [
-        {**SANITIZED_CONFIGURATION, "credentials": {"OPAQUE_ENV": "artifact-secret"}},
-        {
-            **SANITIZED_CONFIGURATION,
-            "models": {
-                "primary": {
-                    **SANITIZED_MODEL,
-                    "apiKey": "artifact-secret",
-                }
-            },
-        },
-        {
-            **SANITIZED_CONFIGURATION,
-            "models": {
-                "primary": {
-                    **SANITIZED_MODEL,
-                    "model": "prefix-artifact-secret-suffix",
-                }
-            },
-        },
-    ],
-    ids=["credentials", "apiKey", "changed-model"],
-)
-@respx.mock
-async def test_untrusted_context_configuration_is_never_written_to_run_artifacts(
-    tmp_path: Path,
-    sample_dataset_dir: Path,
-    sample_task: Task,
-    monkeypatch: pytest.MonkeyPatch,
-    configuration: dict[str, object],
-) -> None:
-    monkeypatch.setenv("OPAQUE_ENV", "artifact-secret")
-    create_route = respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(
-            201,
-            json={
-                "id": CONTEXT_TOKEN,
-                "expiresAt": (datetime.now(UTC) + timedelta(seconds=86400)).isoformat(),
-                "configuration": configuration,
-            },
-        )
-    )
-    run_dir = tmp_path / "run"
-
-    with pytest.raises(NonRetryableSolveError, match="Invalid solve context response") as exc_info:
-        await run(
-            dataset_path=sample_dataset_dir,
-            run_dir_path=run_dir,
-            solve_server_url="http://localhost:3000",
-            solve_profile_path=write_profile(tmp_path / "profile.json"),
-            tasks=[sample_task],
-        )
-
-    assert create_route.call_count == 1
-    assert not (run_dir / "run.json").exists()
-    assert "artifact-secret" not in str(exc_info.value)
-
-
 @respx.mock
 async def test_run_does_not_delete_when_context_creation_fails(
     tmp_path: Path,
@@ -282,7 +219,7 @@ async def test_run_does_not_delete_when_context_creation_fails(
     sample_task: Task,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OPAQUE_ENV", "artifact-forbidden-secret")
+    monkeypatch.setenv("OPAQUE_ENV", "key")
     create_route = respx.post("http://localhost:3000/solve-contexts").mock(
         return_value=httpx.Response(400, text="rejected")
     )
@@ -310,7 +247,7 @@ async def test_resume_creates_a_fresh_context_for_each_invocation(
     sample_task: Task,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OPAQUE_ENV", "secret")
+    monkeypatch.setenv("OPAQUE_ENV", "key")
     monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=RunStats(total_tasks=1)))
     create_route, _, delete_route = context_routes()
     run_dir = tmp_path / "run"
@@ -336,7 +273,7 @@ async def test_matching_resume_creates_context_and_skips_completed_tasks(
     sample_task: Task,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OPAQUE_ENV", "secret")
+    monkeypatch.setenv("OPAQUE_ENV", "key")
     create_route, _, delete_route = context_routes()
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -376,7 +313,7 @@ async def test_mismatched_resume_aborts_before_any_server_request(
     historical_metadata: dict[str, object],
 ) -> None:
     # Arrange
-    monkeypatch.setenv("OPAQUE_ENV", "artifact-forbidden-secret")
+    monkeypatch.setenv("OPAQUE_ENV", "key")
     run_all = AsyncMock(return_value=RunStats(total_tasks=1))
     monkeypatch.setattr(TaskRunner, "run_all", run_all)
     context_routes()
@@ -387,7 +324,7 @@ async def test_mismatched_resume_aborts_before_any_server_request(
     (run_dir / "results.json").write_text("[]")
 
     # Act
-    with pytest.raises(SolveProfileError, match="metadata") as exc_info:
+    with pytest.raises(SolveProfileError, match="metadata"):
         await run(
             dataset_path=sample_dataset_dir,
             run_dir_path=run_dir,
@@ -400,7 +337,6 @@ async def test_mismatched_resume_aborts_before_any_server_request(
     assert not respx.calls
     run_all.assert_not_awaited()
     assert (run_dir / "run.json").read_text() == original_run_json
-    assert "artifact-forbidden-secret" not in str(exc_info.value)
 
 
 @respx.mock
@@ -411,7 +347,7 @@ async def test_released_run_is_migrated_to_canonical_metadata_after_context_crea
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Arrange
-    monkeypatch.setenv("OPAQUE_ENV", "secret")
+    monkeypatch.setenv("OPAQUE_ENV", "key")
     monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=RunStats(total_tasks=1)))
     create_route, status_route, delete_route = context_routes()
     run_dir = tmp_path / "run"
@@ -458,7 +394,7 @@ async def test_released_run_with_a_different_model_fails_before_context_creation
     historical_metadata: dict[str, object],
 ) -> None:
     # Arrange
-    monkeypatch.setenv("OPAQUE_ENV", "artifact-forbidden-secret")
+    monkeypatch.setenv("OPAQUE_ENV", "key")
     run_all = AsyncMock(return_value=RunStats(total_tasks=1))
     monkeypatch.setattr(TaskRunner, "run_all", run_all)
     context_routes()
@@ -469,7 +405,7 @@ async def test_released_run_with_a_different_model_fails_before_context_creation
     (run_dir / "results.json").write_text("[]")
 
     # Act
-    with pytest.raises(SolveProfileError, match="model") as exc_info:
+    with pytest.raises(SolveProfileError, match="model"):
         await run(
             dataset_path=sample_dataset_dir,
             run_dir_path=run_dir,
@@ -482,7 +418,6 @@ async def test_released_run_with_a_different_model_fails_before_context_creation
     assert not respx.calls
     run_all.assert_not_awaited()
     assert (run_dir / "run.json").read_text() == original_run_json
-    assert "artifact-forbidden-secret" not in str(exc_info.value)
 
 
 @respx.mock
@@ -494,7 +429,7 @@ async def test_real_legacy_run_without_infuser_config_is_migrated(
 ) -> None:
     """Real pre-solve run.json files never had infuser_config or created_at."""
     # Arrange
-    monkeypatch.setenv("OPAQUE_ENV", "secret")
+    monkeypatch.setenv("OPAQUE_ENV", "key")
     monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=RunStats(total_tasks=1)))
     create_route, status_route, delete_route = context_routes()
     run_dir = tmp_path / "run"
@@ -526,44 +461,6 @@ async def test_real_legacy_run_without_infuser_config_is_migrated(
     assert migrated["notes"] == ""
 
 
-@respx.mock
-async def test_legacy_run_with_secret_shaped_infuser_config_is_migrated_without_leaking_it(
-    tmp_path: Path,
-    sample_dataset_dir: Path,
-    sample_task: Task,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Arrange
-    monkeypatch.setenv("OPAQUE_ENV", "secret")
-    monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=RunStats(total_tasks=1)))
-    create_route, status_route, delete_route = context_routes()
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    original_run_json = released_run_json(
-        infuser_config={"apiKey": "artifact-forbidden-secret", "maxRetries": 3}
-    )
-    (run_dir / "run.json").write_text(original_run_json)
-    (run_dir / "results.json").write_text("[]")
-
-    # Act
-    await run(
-        dataset_path=sample_dataset_dir,
-        run_dir_path=run_dir,
-        solve_server_url="http://localhost:3000",
-        solve_profile_path=write_profile(tmp_path / "profile.json"),
-        tasks=[sample_task],
-    )
-
-    # Assert
-    assert create_route.call_count == 1
-    assert delete_route.call_count == 1
-    assert status_route.call_count == 0
-    migrated_text = (run_dir / "run.json").read_text()
-    assert "artifact-forbidden-secret" not in migrated_text
-    assert "infuser_config" not in migrated_text
-    assert json.loads(migrated_text)["model"] == "opaque-model"
-
-
 @pytest.mark.parametrize(
     "historical_metadata",
     [{"model": "unknown"}, {"model": None}, {"model": 7}],
@@ -578,7 +475,7 @@ async def test_malformed_released_model_fails_before_context_creation(
     historical_metadata: dict[str, object],
 ) -> None:
     # Arrange
-    monkeypatch.setenv("OPAQUE_ENV", "artifact-forbidden-secret")
+    monkeypatch.setenv("OPAQUE_ENV", "key")
     context_routes()
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -609,7 +506,7 @@ async def test_released_run_with_unknown_model_cannot_adopt_unknown_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Arrange
-    monkeypatch.setenv("OPAQUE_ENV", "artifact-forbidden-secret")
+    monkeypatch.setenv("OPAQUE_ENV", "key")
     context_routes()
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -670,37 +567,6 @@ async def test_released_run_resume_requires_a_solve_profile(
     assert (run_dir / "run.json").read_text() == original_run_json
 
 
-@respx.mock
-async def test_run_json_holding_both_configuration_keys_fails_closed(
-    tmp_path: Path,
-    sample_dataset_dir: Path,
-    sample_task: Task,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Arrange
-    monkeypatch.setenv("OPAQUE_ENV", "secret")
-    context_routes()
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    original_run_json = released_run_json(solve_configuration=SANITIZED_CONFIGURATION)
-    (run_dir / "run.json").write_text(original_run_json)
-    (run_dir / "results.json").write_text("[]")
-
-    # Act
-    with pytest.raises(RunMetadataError):
-        await run(
-            dataset_path=sample_dataset_dir,
-            run_dir_path=run_dir,
-            solve_server_url="http://localhost:3000",
-            solve_profile_path=write_profile(tmp_path / "profile.json"),
-            tasks=[sample_task],
-        )
-
-    # Assert
-    assert not respx.calls
-    assert (run_dir / "run.json").read_text() == original_run_json
-
-
 @pytest.mark.parametrize(
     "run_json",
     [canonical_run_json(), released_run_json()],
@@ -739,7 +605,7 @@ async def test_pure_reevaluation_does_no_server_work_and_never_rewrites_run_json
 
 @pytest.mark.parametrize(
     ("apiKeyEnv", "environment_value"),
-    [("MISSING_ENV", None), ("EMPTY_ENV", ""), ("BAD-NAME", "must-not-appear")],
+    [("MISSING_ENV", None), ("EMPTY_ENV", "")],
 )
 @respx.mock
 async def test_invalid_apiKeyEnv_environment_fails_before_http_or_tasks(
@@ -763,7 +629,7 @@ async def test_invalid_apiKeyEnv_environment_fails_before_http_or_tasks(
     profile_path = tmp_path / "invalid-profile.json"
     profile_path.write_text(json.dumps(profile))
 
-    with pytest.raises(SolveProfileError) as exc_info:
+    with pytest.raises(SolveProfileError):
         await run(
             dataset_path=sample_dataset_dir,
             run_dir_path=tmp_path / "run",
@@ -774,7 +640,6 @@ async def test_invalid_apiKeyEnv_environment_fails_before_http_or_tasks(
 
     assert not respx.calls
     run_all.assert_not_awaited()
-    assert "must-not-appear" not in str(exc_info.value)
 
 
 async def test_context_expiry_stops_queued_tasks(

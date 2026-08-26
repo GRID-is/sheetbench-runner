@@ -75,7 +75,7 @@ def load_task_ids_from_file(file_path: Path) -> set[str]:
     "--solve-profile",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     default=None,
-    help="Non-secret solve profile JSON file",
+    help="Solve profile JSON file",
 )
 @click.option(
     "--concurrency",

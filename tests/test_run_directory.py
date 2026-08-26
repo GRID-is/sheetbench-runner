@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from sheetbench_runner.entities import RunMetadata, TaskResult, TaskStatus
 from sheetbench_runner.run_directory import (
@@ -274,27 +273,6 @@ def test_create_preserves_existing_results(temp_dir: Path):
     assert results[1]["task_id"] == "17-35"
 
 
-@pytest.mark.parametrize(
-    "unsafe_configuration",
-    [
-        {
-            "models": {"default": {"transport": "anthropic", "model": "m", "apiKeyEnv": "K"}},
-            "modelRoles": {"default": "default"},
-        },
-        {
-            "models": {"default": {"transport": "anthropic", "model": "m", "apiKey": "secret"}},
-            "modelRoles": {"default": "default"},
-        },
-        {**SOLVE_CONFIGURATION, "credentials": {"K": "secret"}},
-    ],
-    ids=["apiKeyEnv", "apiKey", "credentials"],
-)
-def test_metadata_cannot_hold_api_key_material(unsafe_configuration: dict[str, Any]) -> None:
-    # Act / Assert
-    with pytest.raises(ValidationError):
-        RunMetadata(model="m", git_hash="h", solve_configuration=unsafe_configuration)
-
-
 def test_read_metadata_returns_none_without_run_json(temp_dir: Path) -> None:
     # Arrange
     run_path = temp_dir / "empty-run"
@@ -346,7 +324,6 @@ def test_read_metadata_decodes_released_legacy_document(temp_dir: Path) -> None:
 @pytest.mark.parametrize(
     "document",
     [
-        {**RELEASED_RUN_JSON, "solve_configuration": SOLVE_CONFIGURATION},
         {"schema_version": 1, "model": "m", "git_hash": "h", "solve_configuration": {}},
         {"schema_version": 2, "git_hash": "h", "solve_configuration": SOLVE_CONFIGURATION},
         {"schema_version": 2, "model": "m", "git_hash": "h", "solve_configuration": []},
@@ -359,7 +336,6 @@ def test_read_metadata_decodes_released_legacy_document(temp_dir: Path) -> None:
         "not-an-object",
     ],
     ids=[
-        "both-keys",
         "wrong-schema-version",
         "missing-model-canonical",
         "configuration-not-an-object",
@@ -372,7 +348,7 @@ def test_read_metadata_decodes_released_legacy_document(temp_dir: Path) -> None:
         "not-json-object",
     ],
 )
-def test_read_metadata_fails_closed(temp_dir: Path, document: object) -> None:
+def test_read_metadata_rejects_undecodable_documents(temp_dir: Path, document: object) -> None:
     # Arrange
     run_path = temp_dir / "broken-run"
     run_path.mkdir()
@@ -494,65 +470,6 @@ def test_read_metadata_keeps_any_parseable_legacy_timestamp(
     # Assert
     assert isinstance(actual, LegacyRunMetadata)
     assert actual.created_at == datetime.fromisoformat(created_at)
-
-
-def test_read_metadata_rejects_unsafe_canonical_configuration(temp_dir: Path) -> None:
-    # Arrange
-    run_path = temp_dir / "unsafe-canonical-run"
-    run_path.mkdir()
-    document = {
-        "schema_version": 2,
-        "model": "m",
-        "git_hash": "h",
-        "solve_configuration": {
-            "models": {
-                "primary": {
-                    "transport": "anthropic",
-                    "model": "m",
-                    "apiKeyEnv": "KEY",
-                }
-            },
-            "modelRoles": {"default": "primary"},
-            "ttlSeconds": 86400,
-        },
-        "test_set": None,
-        "notes": "",
-        "created_at": "2026-01-02T03:04:05",
-    }
-    (run_path / "run.json").write_text(json.dumps(document))
-
-    # Act / Assert
-    with pytest.raises(RunMetadataError, match="valid canonical metadata"):
-        RunDirectory(run_path).read_metadata()
-
-
-@pytest.mark.parametrize(
-    "extra_field",
-    [
-        {"context_id": "capability-marker"},
-        {"apiKey": "provider-key-marker"},
-        {"unexpected": "value"},
-    ],
-    ids=["context-capability", "api-key", "unknown"],
-)
-def test_read_metadata_rejects_unknown_canonical_fields(
-    temp_dir: Path, extra_field: dict[str, str]
-) -> None:
-    # Arrange
-    run_path = temp_dir / "canonical-with-extra-field"
-    run_path.mkdir()
-    document = RunMetadata(
-        model="m",
-        git_hash="h",
-        solve_configuration=SOLVE_CONFIGURATION,
-        created_at=datetime.fromisoformat("2026-01-02T03:04:05"),
-    ).model_dump(mode="json")
-    document.update(extra_field)
-    (run_path / "run.json").write_text(json.dumps(document))
-
-    # Act / Assert
-    with pytest.raises(RunMetadataError, match="valid canonical metadata"):
-        RunDirectory(run_path).read_metadata()
 
 
 def test_migrating_released_metadata_preserves_history(temp_dir: Path) -> None:

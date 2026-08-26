@@ -1,4 +1,4 @@
-"""Load and validate non-secret solve profiles."""
+"""Load and validate solve profiles."""
 
 import json
 import os
@@ -11,19 +11,11 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictInt,
-    StringConstraints,
     ValidationError,
     model_validator,
 )
 
-MAX_MODELS = 32
-MAX_MODEL_ROLES = 32
-MAX_DICTIONARY_NAME_LENGTH = 64
-MAX_MODEL_ID_LENGTH = 256
-MAX_OUTPUT_TOKENS = 1_000_000
-MAX_CONTEXT_TTL_SECONDS = 86400
-
-Name = Annotated[str, StringConstraints(min_length=1, max_length=MAX_DICTIONARY_NAME_LENGTH)]
+DEFAULT_CONTEXT_TTL_SECONDS = 86400
 
 
 class SolveProfileError(ValueError):
@@ -35,7 +27,7 @@ class ModelOptions(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    maxOutputTokens: Annotated[StrictInt, Field(gt=0, le=MAX_OUTPUT_TOKENS)] | None = None
+    maxOutputTokens: StrictInt | None = None
 
 
 class SanitizedModel(BaseModel):
@@ -44,17 +36,14 @@ class SanitizedModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     transport: Literal["anthropic", "openai-responses", "openai-compatible"]
-    model: Annotated[str, Field(min_length=1, max_length=MAX_MODEL_ID_LENGTH)]
+    model: str
     options: ModelOptions | None = None
 
 
 class ProfileModel(SanitizedModel):
     """A configured model that names the environment variable holding its API key."""
 
-    apiKeyEnv: Annotated[
-        str,
-        Field(max_length=MAX_DICTIONARY_NAME_LENGTH, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"),
-    ]
+    apiKeyEnv: str
 
 
 class SanitizedConfiguration(BaseModel):
@@ -62,9 +51,9 @@ class SanitizedConfiguration(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    models: Annotated[Mapping[Name, SanitizedModel], Field(min_length=1, max_length=MAX_MODELS)]
-    modelRoles: Annotated[dict[Name, Name], Field(min_length=1, max_length=MAX_MODEL_ROLES)]
-    ttlSeconds: Annotated[StrictInt, Field(gt=0, le=MAX_CONTEXT_TTL_SECONDS)] | None = None
+    models: Annotated[Mapping[str, SanitizedModel], Field(min_length=1)]
+    modelRoles: Annotated[dict[str, str], Field(min_length=1)]
+    ttlSeconds: StrictInt | None = None
 
     @model_validator(mode="after")
     def _roles_name_configured_models(self) -> Self:
@@ -79,12 +68,12 @@ class SanitizedConfiguration(BaseModel):
 class SolveConfiguration(SanitizedConfiguration):
     """A solve configuration as a profile file declares it."""
 
-    models: Annotated[Mapping[Name, ProfileModel], Field(min_length=1, max_length=MAX_MODELS)]
+    models: Annotated[Mapping[str, ProfileModel], Field(min_length=1)]
 
 
 @dataclass(frozen=True)
 class SolveProfile:
-    """A validated non-secret profile that resolves API keys on demand."""
+    """A validated profile that resolves API keys on demand."""
 
     configuration: SolveConfiguration
     sanitized_configuration: SanitizedConfiguration
@@ -104,7 +93,7 @@ class SolveProfile:
 
 
 def sanitized_configuration(profile: SolveConfiguration) -> SanitizedConfiguration:
-    """Derive the exact server-visible sanitized configuration from a profile."""
+    """Derive the server-visible configuration from a profile."""
     return SanitizedConfiguration.model_validate(
         profile.model_dump(exclude={"models": {"__all__": {"apiKeyEnv"}}})
     )
@@ -125,6 +114,6 @@ def load_solve_profile(path: Path) -> SolveProfile:
         raise SolveProfileError(f"{path}: {e}") from e
 
     if configuration.ttlSeconds is None:
-        configuration = configuration.model_copy(update={"ttlSeconds": MAX_CONTEXT_TTL_SECONDS})
+        configuration = configuration.model_copy(update={"ttlSeconds": DEFAULT_CONTEXT_TTL_SECONDS})
     default_model = configuration.models[configuration.modelRoles["default"]].model
     return SolveProfile(configuration, sanitized_configuration(configuration), default_model)

@@ -2,7 +2,6 @@
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, AsyncIterator, Mapping, Self
 
@@ -10,12 +9,7 @@ import httpx
 from pydantic import Base64Bytes, BaseModel, ConfigDict, Field
 
 from .entities import SolveUsage
-from .solve_profile import (
-    SanitizedConfiguration,
-    SolveConfiguration,
-    SolveProfileError,
-    sanitized_configuration,
-)
+from .solve_profile import SolveConfiguration
 
 
 class SolveError(Exception):
@@ -44,7 +38,6 @@ class SolveContextExpiredError(RetryableSolveError):
 
 # Limit error message length for readability
 _ERROR_TEXT_MAX_LENGTH = 200
-_DEFAULT_TTL_SECONDS = 7200
 
 
 @asynccontextmanager
@@ -97,18 +90,7 @@ class SolveContextResponseBody(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    id: Annotated[str, Field(min_length=1)]
-    expiresAt: datetime
-    configuration: SanitizedConfiguration
-
-
-@dataclass(frozen=True)
-class SolveContextResponse:
-    """Sanitized response from creating a solve context."""
-
     id: str
-    expires_at: datetime
-    configuration: SanitizedConfiguration
 
 
 @dataclass(frozen=True)
@@ -207,12 +189,10 @@ class SolveClient:
         self,
         profile: SolveConfiguration,
         api_keys: Mapping[str, str],
-    ) -> SolveContextResponse:
+    ) -> str:
         """Create and retain one solve context for subsequent task requests."""
         if self._solve_context_id is not None:
             raise RuntimeError("A solve context already exists")
-        if set(api_keys) != set(profile.models):
-            raise SolveProfileError("API keys must exactly match configured models")
         payload_models = {
             name: {
                 **model.model_dump(exclude={"apiKeyEnv"}, exclude_none=True),
@@ -222,10 +202,6 @@ class SolveClient:
         }
         payload = {**profile.model_dump(exclude_none=True), "models": payload_models}
 
-        expected = sanitized_configuration(profile)
-        if expected.ttlSeconds is None:
-            expected = expected.model_copy(update={"ttlSeconds": _DEFAULT_TTL_SECONDS})
-
         async with handle_http_errors("Create solve context"):
             response = await self.client.post(f"{self.base_url}/solve-contexts", json=payload)
             response.raise_for_status()
@@ -233,11 +209,9 @@ class SolveClient:
             body = SolveContextResponseBody.model_validate(response.json())
         except ValueError as e:
             raise NonRetryableSolveError("Invalid solve context response") from e
-        if body.configuration != expected:
-            raise NonRetryableSolveError("Invalid solve context response")
 
         self._solve_context_id = body.id
-        return SolveContextResponse(body.id, body.expiresAt, body.configuration)
+        return body.id
 
     async def delete_solve_context(self) -> None:
         """Delete the retained solve context and forget its identifier."""

@@ -193,7 +193,7 @@ class RunDirectory:
         self._replace_run_json(metadata.model_dump(mode="json"))
 
     def read_metadata(self) -> RunMetadata | LegacyRunMetadata | None:
-        """Decode run.json as canonical or released metadata, failing closed otherwise."""
+        """Decode run.json as canonical or released metadata, or raise RunMetadataError."""
         if not self.run_json_path.exists():
             return None
         try:

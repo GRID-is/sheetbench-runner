@@ -2,7 +2,6 @@
 
 import base64
 import json
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -16,7 +15,7 @@ from sheetbench_runner.solve_client import (
     SolveContextExpiredError,
     SolveResponse,
 )
-from sheetbench_runner.solve_profile import SanitizedConfiguration, SolveConfiguration
+from sheetbench_runner.solve_profile import SolveConfiguration
 
 PRIMARY_MODEL: dict[str, object] = {
     "transport": "openai-compatible",
@@ -31,23 +30,10 @@ SOLVE_PROFILE = SolveConfiguration.model_validate(
 )
 CONTEXT_TOKEN = "solve-context-token"
 SANITIZED_PRIMARY_MODEL = {"transport": "openai-compatible", "model": "opaque-model"}
-EFFECTIVE_PROFILE = {
-    "models": {"primary": SANITIZED_PRIMARY_MODEL},
-    "modelRoles": {"default": "primary"},
-    "ttlSeconds": 7200,
-}
-EFFECTIVE_CONFIGURATION = SanitizedConfiguration.model_validate(EFFECTIVE_PROFILE)
 
 
-def context_response(
-    *,
-    token: object = CONTEXT_TOKEN,
-    expires_at: object | None = None,
-    configuration: object = EFFECTIVE_PROFILE,
-) -> dict[str, object]:
-    if expires_at is None:
-        expires_at = (datetime.now(UTC) + timedelta(seconds=7200)).isoformat()
-    return {"id": token, "expiresAt": expires_at, "configuration": configuration}
+def context_response(*, token: object = CONTEXT_TOKEN) -> dict[str, object]:
+    return {"id": token}
 
 
 def solve_response() -> dict[str, object]:
@@ -75,7 +61,7 @@ async def activate_context(client: SolveClient) -> None:
             json=context_response(),
         )
     )
-    await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
+    await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-key"})
 
 
 @respx.mock
@@ -102,16 +88,16 @@ async def test_context_lifecycle_uses_contract_headers_and_bodies(tmp_path: Path
     )
 
     async with SolveClient("http://localhost:3000") as client:
-        created = await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
+        created = await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-key"})
         await client.upload_workbook(xlsx_file)
         await client.solve(workbook_id, "Test prompt")
         await client.delete_solve_context()
 
-    assert created.configuration == EFFECTIVE_CONFIGURATION
+    assert created == CONTEXT_TOKEN
     creation = create_route.calls[0].request
     assert "X-Solve-Context" not in creation.headers
     assert json.loads(creation.content) == {
-        "models": {"primary": {**SANITIZED_PRIMARY_MODEL, "apiKey": "test-secret"}},
+        "models": {"primary": {**SANITIZED_PRIMARY_MODEL, "apiKey": "test-key"}},
         "modelRoles": {"default": "primary"},
     }
     for route in (upload_route, solve_route, delete_route):
@@ -148,49 +134,29 @@ async def test_context_request_repeats_shared_keys_and_supports_different_keys()
             "ttlSeconds": 900,
         }
     )
-    expected_configuration = {
-        "models": {
-            "primary": {"transport": "anthropic", "model": "model-a"},
-            "reviewer": {"transport": "openai-responses", "model": "model-b"},
-            "judge": {
-                "transport": "openai-compatible",
-                "model": "model-c",
-                "options": {"maxOutputTokens": 123},
-            },
-        },
-        "modelRoles": {"default": "primary", "review": "reviewer", "judge": "judge"},
-        "ttlSeconds": 900,
-    }
     route = respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(
-            201,
-            json=context_response(
-                expires_at=(datetime.now(UTC) + timedelta(seconds=900)).isoformat(),
-                configuration=expected_configuration,
-            ),
-        )
+        return_value=httpx.Response(201, json=context_response())
     )
 
     async with SolveClient("http://localhost:3000") as client:
-        created = await client.create_solve_context(
+        await client.create_solve_context(
             profile,
-            {"primary": "shared-secret", "reviewer": "shared-secret", "judge": "other-secret"},
+            {"primary": "shared-key", "reviewer": "shared-key", "judge": "other-key"},
         )
 
-    assert created.configuration == SanitizedConfiguration.model_validate(expected_configuration)
     assert json.loads(route.calls[0].request.content) == {
         "models": {
-            "primary": {"transport": "anthropic", "model": "model-a", "apiKey": "shared-secret"},
+            "primary": {"transport": "anthropic", "model": "model-a", "apiKey": "shared-key"},
             "reviewer": {
                 "transport": "openai-responses",
                 "model": "model-b",
-                "apiKey": "shared-secret",
+                "apiKey": "shared-key",
             },
             "judge": {
                 "transport": "openai-compatible",
                 "model": "model-c",
                 "options": {"maxOutputTokens": 123},
-                "apiKey": "other-secret",
+                "apiKey": "other-key",
             },
         },
         "modelRoles": {"default": "primary", "review": "reviewer", "judge": "judge"},
@@ -210,107 +176,19 @@ async def test_upload_and_solve_require_a_context(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "configuration",
-    [
-        {**EFFECTIVE_PROFILE, "credentials": {"primary": "test-secret"}},
-        {
-            **EFFECTIVE_PROFILE,
-            "models": {
-                "primary": {
-                    **SANITIZED_PRIMARY_MODEL,
-                    "apiKeyEnv": "OPENAI_API_KEY",
-                }
-            },
-        },
-        {
-            **EFFECTIVE_PROFILE,
-            "models": {
-                "primary": {
-                    **SANITIZED_PRIMARY_MODEL,
-                    "apiKey": "test-secret",
-                }
-            },
-        },
-        {
-            **EFFECTIVE_PROFILE,
-            "models": {
-                "primary": {
-                    **SANITIZED_PRIMARY_MODEL,
-                    "model": "other-model",
-                }
-            },
-        },
-    ],
-    ids=["credentials", "apiKeyEnv", "apiKey", "changed-model"],
+    "body",
+    [{"id": 123}, {}],
+    ids=["non-string-id", "missing-id"],
 )
 @respx.mock
-async def test_invalid_context_configuration_is_never_retained(
-    configuration: dict[str, object],
-) -> None:
-    create_route = respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(
-            201,
-            json=context_response(configuration=configuration),
-        )
-    )
-
-    async with SolveClient("http://localhost:3000") as client:
-        with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
-            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
-        with pytest.raises(RuntimeError, match="solve context"):
-            await client.solve("wb-123", "Test prompt")
-
-    assert create_route.call_count == 1
-
-
-@pytest.mark.parametrize(
-    "response_update",
-    [
-        {"id": ""},
-        {"id": 123},
-        {"expiresAt": "not-a-timestamp"},
-        {"configuration": []},
-        {"configuration": {**EFFECTIVE_PROFILE, "ttlSeconds": 7201}},
-    ],
-    ids=[
-        "empty-id",
-        "non-string-id",
-        "invalid-expiry",
-        "invalid-configuration-type",
-        "changed-ttl",
-    ],
-)
-@respx.mock
-async def test_malformed_context_response_is_never_retained(
-    response_update: dict[str, object],
-) -> None:
-    response_data: dict[str, object] = context_response()
-    response_data.update(response_update)
+async def test_malformed_context_response_is_rejected(body: dict[str, object]) -> None:
     respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(201, json=response_data)
+        return_value=httpx.Response(201, json=body)
     )
 
     async with SolveClient("http://localhost:3000") as client:
         with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
-            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
-        with pytest.raises(RuntimeError, match="solve context"):
-            await client.solve("wb-123", "Test prompt")
-
-
-@pytest.mark.parametrize("missing_field", ["id", "expiresAt", "configuration"])
-@respx.mock
-async def test_context_response_missing_required_field_is_never_retained(
-    missing_field: str,
-) -> None:
-    response_data = context_response()
-    del response_data[missing_field]
-    respx.post("http://localhost:3000/solve-contexts").mock(
-        return_value=httpx.Response(201, json=response_data)
-    )
-
-    async with SolveClient("http://localhost:3000") as client:
-        with pytest.raises(NonRetryableSolveError, match="Invalid solve context response"):
-            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
+            await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-key"})
         with pytest.raises(RuntimeError, match="solve context"):
             await client.solve("wb-123", "Test prompt")
 
@@ -329,11 +207,11 @@ async def test_context_response_accepts_additive_top_level_fields() -> None:
 
     # Act
     async with SolveClient("http://localhost:3000") as client:
-        context = await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
+        context_id = await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-key"})
         await client.delete_solve_context()
 
     # Assert
-    assert context.configuration == EFFECTIVE_CONFIGURATION
+    assert context_id == CONTEXT_TOKEN
     assert delete_route.call_count == 1
     assert delete_route.calls[0].request.headers["X-Solve-Context"] == CONTEXT_TOKEN
 
@@ -596,7 +474,7 @@ async def test_grid_api_key_never_installs_authorization_header(
     )
     async with SolveClient("http://localhost:3000") as client:
         await client.get_status()
-        await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-secret"})
+        await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-key"})
         await client.upload_workbook(xlsx_file)
         await client.solve(workbook_id, "Test prompt")
         await client.delete_solve_context()
