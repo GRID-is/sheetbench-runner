@@ -232,6 +232,7 @@ Each entry in `results.json` records the task outcome, timing, and token usage:
   "tool_calls": 8,
   "input_tokens": 12500,
   "output_tokens": 3200,
+  "input_file": "spreadsheet/13-1/1_13-1_init.xlsx",
   "output_file": "13-1-output.xlsx",
   "transcript_file": "13-1-transcript.json",
   "result": "pass",
