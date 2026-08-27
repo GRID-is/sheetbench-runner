@@ -12,6 +12,8 @@ from sheetbench_runner.solve_client import (
     NonRetryableSolveError,
     RetryableSolveError,
     SolveClient,
+    SolveTimeoutError,
+    handle_http_errors,
 )
 from sheetbench_runner.solve_profile import SolveConfiguration
 
@@ -278,3 +280,31 @@ async def test_a_rejected_context_is_recreated_and_the_request_retried(tmp_path:
     assert workbook_id == "wb-123"
     assert create_route.call_count == 2
     assert upload_route.calls[1].request.headers["X-Solve-Context"] == "second-context"
+
+
+async def test_a_transport_failure_names_its_exception_class_and_cause() -> None:
+    # Arrange
+    expected = (
+        "Connection error: ReadError "
+        "(caused by ConnectionResetError: [Errno 54] Connection reset by peer)"
+    )
+
+    # Act
+    with pytest.raises(RetryableSolveError) as raised:
+        async with handle_http_errors("Solve"):
+            try:
+                raise OSError(54, "Connection reset by peer")
+            except OSError as cause:
+                raise httpx.ReadError("") from cause
+
+    # Assert
+    assert str(raised.value) == expected
+
+
+async def test_only_a_solve_timeout_counts_as_a_completed_attempt() -> None:
+    with pytest.raises(SolveTimeoutError):
+        async with handle_http_errors("Solve"):
+            raise httpx.ReadTimeout("")
+    with pytest.raises(RetryableSolveError):
+        async with handle_http_errors("Upload"):
+            raise httpx.ReadTimeout("")

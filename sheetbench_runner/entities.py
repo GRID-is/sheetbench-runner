@@ -16,7 +16,7 @@ class TaskStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
-    FAILED = "failed"  # Transient failure (5xx, timeout) - will retry on resume
+    FAILED = "failed"  # Transient failure (5xx, connection) - will retry on resume
     EVALUATED = "evaluated"
 
 

@@ -22,11 +22,15 @@ from .run_directory import LegacyRunMetadata, RunDirectory
 from .solve_client import (
     RetryableSolveError,
     SolveClient,
+    SolveTimeoutError,
 )
 from .solve_profile import SolveProfileError, load_solve_profile
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+TRANSIENT_ATTEMPTS = 3
+TRANSIENT_RETRY_WAIT_SECONDS = 30
 
 
 @dataclass
@@ -277,16 +281,22 @@ class TaskRunner:
             )
 
             try:
-                # Upload workbook
-                input_path = self._dataset.get_input_path(task)
-                workbook_id = await self._solve_client.upload_workbook(input_path)
-                logger.info(f"Task {task.id} uploaded workbook as {workbook_id}")
-
-                # Build prompt with workbook_id
-                prompt = build_prompt(task, workbook_id)
-
-                # Call /solve
-                response = await self._solve_client.solve(workbook_id, prompt)
+                for attempt in range(1, TRANSIENT_ATTEMPTS + 1):
+                    try:
+                        input_path = self._dataset.get_input_path(task)
+                        workbook_id = await self._solve_client.upload_workbook(input_path)
+                        logger.info(f"Task {task.id} uploaded workbook as {workbook_id}")
+                        prompt = build_prompt(task, workbook_id)
+                        response = await self._solve_client.solve(workbook_id, prompt)
+                        break
+                    except RetryableSolveError as e:
+                        if attempt == TRANSIENT_ATTEMPTS:
+                            raise
+                        logger.warning(
+                            f"Task {task.id} attempt {attempt} failed: {e}; "
+                            f"retrying in {TRANSIENT_RETRY_WAIT_SECONDS}s"
+                        )
+                        await asyncio.sleep(TRANSIENT_RETRY_WAIT_SECONDS)
 
                 logger.info(f"Task {task.id} solve completed")
 
@@ -354,6 +364,17 @@ class TaskRunner:
                     regression_accuracy=eval_result.regression_accuracy,
                     modification_accuracy=eval_result.modification_accuracy,
                 )
+                return result
+
+            except SolveTimeoutError as e:
+                duration = time.time() - start_time
+                logger.warning(f"Task {task.id} timed out after {duration:.1f}s: {e}")
+                result.status = TaskStatus.EVALUATED
+                result.result = "fail"
+                result.message = str(e)
+                result.duration_seconds = round(duration, 1)
+                self._run_dir.record_result(result)
+                self._task_completed(task.id, passed=False)
                 return result
 
             except RetryableSolveError as e:
