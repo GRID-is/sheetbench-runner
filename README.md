@@ -119,13 +119,12 @@ recorded dataset automatically.
 
 ### Upstream-parity grading (LibreOffice pass)
 
-The official SpreadsheetBench 2 protocol recalculates every output with
-LibreOffice before evaluation. GRID outputs are already calculated, so
-native grading skips this — the honest measure of the engine, but it
-systematically differs from published numbers (LibreOffice-normalized
-goldens contain artifacts such as literal `=#N/A` formulas, and stale or
-uncalculated cells in outputs are recomputed rather than penalized). To
-produce an upstream-comparable number:
+The official SpreadsheetBench 2 protocol recalculates workbooks with LibreOffice
+before evaluation: model outputs before grading, and (per the upstream README) the
+dataset's input and golden files before any experiment. GRID outputs are already
+calculated, so native grading skips this — the honest measure of the engine, but it
+systematically differs from published numbers. To produce an upstream-comparable
+number:
 
 ```bash
 make lo-parity RUN=data/runs/<run-dir> [DATASET=<dataset-dir>]
@@ -136,14 +135,27 @@ make lo-parity RUN=data/runs/<run-dir> [DATASET=<dataset-dir>]
 
 Run it from the repo root; the regrade uses `uv run` so it always grades
 with the current evaluator source (not the installed CLI snapshot). The
-script clones the run dir to `<run-dir>-parity`, applies upstream's own
+script clones the run dir to `<run-dir>-parity`, applies upstream's
 `open_spreadsheet.py` in a Linux container (macOS cannot run it natively —
 and the container runs as root because LibreOffice cannot create its user
 profile under an unmapped UID), regrades the copies, and prints the
 native-vs-parity comparison. Report both numbers; `lo-version.txt` in the
-parity dir records the LibreOffice version used. Reference point: on the
-2026-08-10 Financial_Model run the pass moved 26/100 -> 40/100 with zero
-downward flips.
+parity dir records the LibreOffice version used.
+
+The LibreOffice version matters: versions before 24.8 lack XLOOKUP and cache
+`#NAME?` for it, which zeroes every dependent value. The image builds on
+Debian trixie (LibreOffice 25.2). The dataset's own input and golden files
+were last written by LibreOffice 24.2, so they must be recalculated too before
+their cached values are comparable:
+
+```bash
+make lo-recalc-all DIR=<dataset-dir>/spreadsheet
+```
+
+rewrites every `.xlsx` under `DIR` in place (upstream's script only processes
+files named `*output.xlsx`; the vendored copy adds `--suffix`, see
+`docker/lo-recalc/UPSTREAM.md`). Do this on a copy or a version-controlled
+checkout, never on the only copy of a dataset.
 
 ### All options
 
