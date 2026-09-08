@@ -71,7 +71,11 @@ sheetbench-runner \
 `Debugging`, `Financial_Model` and `Template` are supported. v2 entries reference
 their input workbook (`spreadsheet_path`) and golden file (`golden_response_path`)
 directly, have no `instruction_type`, and always sheet-qualify `answer_position`.
-The prompt for v2 tasks omits the `instruction_type` section accordingly. Grading
+The prompt for v2 tasks is the instructions block of upstream's SWE-agent config
+(`SWE-agent/config/spreadsheet.yaml`): a `## Task instructions` header, upstream's
+one-line framing, and the instruction, nothing else. `answer_position` is withheld
+from the agent, as upstream withholds it; only the evaluator reads it, from the
+dataset. Grading
 uses the upstream SpreadsheetBench 2 semantics: cells in `answer_position` are
 classified by comparing input to golden — unchanged cells are *regression* cells,
 changed cells are *modification* cells — and the output is compared to golden with

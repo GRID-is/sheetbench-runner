@@ -1,143 +1,70 @@
-"""Tests for prompt building."""
+"""Tests for prompt building.
 
-import pytest
+The prompt is the user message the model sees, verbatim; the solve server
+appends its own context and parses nothing out of it. v2 mirrors the
+instructions block of upstream's SWE-agent config
+(SpreadsheetBench-2/SWE-agent/config/spreadsheet.yaml); v1 mirrors the v1
+reference inference script.
+"""
 
 from sheetbench_runner.entities import Task
 from sheetbench_runner.prompt import build_prompt
 
+V2_TASK = Task(
+    id="01_01",
+    instruction="Please audit and fix this file thoroughly.",
+    spreadsheet_path="spreadsheet/01_Debugging/input_files/Double Counting_input.xlsx",
+    answer_position="'LBO'!A2:X218,'Financials'!A2:Q29",
+    golden_response_path="spreadsheet/01_Debugging/01_golden.xlsx",
+)
 
-def test_build_prompt_withholds_extra_hints():
-    """answer_sheet and data_position must never leak into the prompt.
 
-    The built-in SpreadsheetBench inference scripts surface neither field, so
-    surfacing them would make our prompt more revealing than the reference.
-    Sentinel values guard against a coincidental substring match.
+def test_v2_prompt_is_the_upstream_instructions_block():
+    """Byte-for-byte the upstream block, with the instruction substituted."""
+    # Act
+    prompt = build_prompt(V2_TASK)
+
+    # Assert
+    assert prompt == (
+        "## Task instructions\n"
+        "You need to process a spreadsheet file based on specific instructions.\n"
+        "**Instruction:** Please audit and fix this file thoroughly."
+    )
+
+
+def test_v2_prompt_withholds_grader_fields():
+    """Upstream never shows the agent answer_position, and neither do we.
+
+    The v1 preamble, field names and workbook id must not leak into v2 either.
     """
-    # Arrange
-    task = Task(
-        id="13-1",
-        instruction="Combine the data from columns A and B into column C",
-        spreadsheet_path="spreadsheet/13-1",
-        instruction_type="Sheet-Level Manipulation",
-        answer_position="C1:C10",
-        answer_sheet="SHEET_SENTINEL",
-        data_position="DATAPOS_SENTINEL",
-    )
-    workbook_id = "wb-13-1"
-
     # Act
-    prompt = build_prompt(task, workbook_id)
+    prompt = build_prompt(V2_TASK)
 
     # Assert
-    assert "You are a spreadsheet expert" in prompt
-    assert task.instruction in prompt
-    assert workbook_id in prompt
-    assert task.instruction_type in prompt
-    assert task.answer_position in prompt
-
-    assert "### answer_sheet" not in prompt
-    assert "SHEET_SENTINEL" not in prompt
-    assert "### data_position" not in prompt
-    assert "DATAPOS_SENTINEL" not in prompt
+    assert V2_TASK.answer_position not in prompt
+    assert "'LBO'" not in prompt
+    for forbidden in ("answer_position", "instruction_type", "workbook_id", "spreadsheet expert"):
+        assert forbidden not in prompt
 
 
-def test_build_prompt_minimal(sample_task_minimal: Task):
-    """Test prompt building with only required fields."""
-    # Arrange
-    workbook_id = "wb-99-1"
-
+def test_v2_fixture_uses_the_v2_template(sample_task_v2: Task):
+    """A task without instruction_type is a v2 task."""
     # Act
-    prompt = build_prompt(sample_task_minimal, workbook_id)
+    prompt = build_prompt(sample_task_v2)
 
     # Assert
-    assert "You are a spreadsheet expert" in prompt
-    assert sample_task_minimal.instruction in prompt
-    assert sample_task_minimal.answer_position in prompt
-
-    # Optional fields should NOT be present
-    assert "### answer_sheet" not in prompt
-    assert "### data_position" not in prompt
+    assert prompt.startswith("## Task instructions\n")
+    assert sample_task_v2.instruction in prompt
+    assert sample_task_v2.answer_position not in prompt
 
 
-def test_build_prompt_preserves_formatting():
-    """Test that prompt maintains expected structure."""
-    # Arrange
-    task = Task(
-        id="test",
-        instruction="Test instruction with\nmultiple lines",
-        spreadsheet_path="spreadsheet/test",
-        instruction_type="Cell-Level Manipulation",
-        answer_position="A1",
-    )
-    workbook_id = "wb-test"
+def test_v1_prompt_is_unchanged_from_reference():
+    """Guard the exact v1 text.
 
-    # Act
-    prompt = build_prompt(task, workbook_id)
-
-    # Assert - check section headers are present in order
-    sections = ["### instruction", "### workbook_id", "### instruction_type", "### answer_position"]
-    last_pos = -1
-    for section in sections:
-        pos = prompt.find(section)
-        assert pos > last_pos, f"Section {section} not found in expected order"
-        last_pos = pos
-
-
-class TestV2Prompt:
-    """v2 tasks carry no instruction_type, so the prompt must omit it entirely."""
-
-    def test_omits_instruction_type_section(self, sample_task_v2: Task):
-        """A task without instruction_type gets no ### instruction_type section."""
-        # Act
-        prompt = build_prompt(sample_task_v2, "wb-01-01")
-
-        # Assert
-        assert "### instruction_type" not in prompt
-        assert "None" not in prompt
-
-    def test_omits_instruction_type_field_description(self, sample_task_v2: Task):
-        """The field-list preamble must not describe a field the prompt omits."""
-        # Act
-        prompt = build_prompt(sample_task_v2, "wb-01-01")
-
-        # Assert
-        assert "- instruction_type:" not in prompt
-        assert "Cell-Level Manipulation" not in prompt
-        assert "Sheet-Level Manipulation" not in prompt
-
-    def test_keeps_instruction_workbook_and_answer_position(self, sample_task_v2: Task):
-        """Everything else the agent needs is still present, in order."""
-        # Act
-        prompt = build_prompt(sample_task_v2, "wb-01-01")
-
-        # Assert
-        assert sample_task_v2.instruction in prompt
-        assert "wb-01-01" in prompt
-        assert sample_task_v2.answer_position in prompt
-
-        sections = ["### instruction", "### workbook_id", "### answer_position"]
-        positions = [prompt.find(s) for s in sections]
-        assert -1 not in positions
-        assert positions == sorted(positions)
-
-    def test_keeps_answer_position_scope_constraint(self, sample_task_v2: Task):
-        """The 'only modify within answer_position' constraint is retained."""
-        # Act
-        prompt = build_prompt(sample_task_v2, "wb-01-01")
-
-        # Assert
-        assert (
-            "You only need to modify or fill in values within the cell range "
-            "specified by answer_position" in prompt
-        )
-
-
-def test_build_prompt_v1_output_is_unchanged():
-    """Guard the exact v1 prompt text while the builder grows a v2 branch.
-
-    The v1 wording deliberately mirrors the built-in SpreadsheetBench inference
-    scripts (commit 3d9b34b), so any drift here would silently change what v1
-    runs are measuring. Captured byte-for-byte from master.
+    v1 mirrors the reference inference script (commit 3d9b34b). The only
+    departures are the two workbook_id lines, removed because the solve
+    server no longer strips them, and the trailing newline the server used
+    to trim. Drift here would silently change what v1 runs measure.
     """
     # Arrange
     task = Task(
@@ -151,7 +78,7 @@ def test_build_prompt_v1_output_is_unchanged():
     )
 
     # Act
-    prompt = build_prompt(task, "wb-1")
+    prompt = build_prompt(task)
 
     # Assert
     assert prompt == (
@@ -160,7 +87,6 @@ def test_build_prompt_v1_output_is_unchanged():
         "You need to solve the given spreadsheet manipulation question, which contains "
         "the following types of information:\n"
         "- instruction: The question about spreadsheet manipulation.\n"
-        "- workbook_id: The ID of the workbook that has been uploaded.\n"
         "- instruction_type: There are two values (Cell-Level Manipulation, Sheet-Level "
         "Manipulation) used to indicate whether the answer to this question applies only "
         "to specific cells or to the entire worksheet.\n"
@@ -174,31 +100,77 @@ def test_build_prompt_v1_output_is_unchanged():
         "### instruction\n"
         "INSTR\n"
         "\n"
-        "### workbook_id\n"
-        "wb-1\n"
-        "\n"
         "### instruction_type\n"
         "Sheet-Level Manipulation\n"
         "\n"
         "### answer_position\n"
-        "C1:C10\n"
+        "C1:C10"
     )
 
 
-def test_build_prompt_empty_workbook_id_raises():
-    """Test that empty workbook_id raises ValueError."""
+def test_v1_prompt_withholds_extra_hints():
+    """answer_sheet, data_position and the workbook id never reach the prompt.
+
+    The reference script surfaces neither of the first two, so surfacing them
+    would make our prompt more revealing than the reference. Sentinel values
+    guard against a coincidental substring match.
+    """
+    # Arrange
+    task = Task(
+        id="13-1",
+        instruction="Combine the data from columns A and B into column C",
+        spreadsheet_path="spreadsheet/13-1",
+        instruction_type="Sheet-Level Manipulation",
+        answer_position="C1:C10",
+        answer_sheet="SHEET_SENTINEL",
+        data_position="DATAPOS_SENTINEL",
+    )
+
+    # Act
+    prompt = build_prompt(task)
+
+    # Assert
+    assert "You are a spreadsheet expert" in prompt
+    assert task.instruction in prompt
+    assert task.instruction_type in prompt
+    assert task.answer_position in prompt
+
+    assert "### answer_sheet" not in prompt
+    assert "SHEET_SENTINEL" not in prompt
+    assert "### data_position" not in prompt
+    assert "DATAPOS_SENTINEL" not in prompt
+    assert "workbook_id" not in prompt
+
+
+def test_v1_prompt_section_order():
+    """The three v1 sections appear in the reference order."""
     # Arrange
     task = Task(
         id="test",
-        instruction="Test",
+        instruction="Test instruction with\nmultiple lines",
         spreadsheet_path="spreadsheet/test",
         instruction_type="Cell-Level Manipulation",
         answer_position="A1",
     )
 
-    # Act & Assert
-    with pytest.raises(ValueError, match="workbook_id cannot be empty"):
-        build_prompt(task, "")
+    # Act
+    prompt = build_prompt(task)
 
-    with pytest.raises(ValueError, match="workbook_id cannot be empty"):
-        build_prompt(task, "   ")
+    # Assert
+    sections = ["### instruction", "### instruction_type", "### answer_position"]
+    positions = [prompt.find(s) for s in sections]
+    assert -1 not in positions
+    assert positions == sorted(positions)
+
+
+def test_build_prompt_minimal(sample_task_minimal: Task):
+    """A v1 task with only required fields renders the v1 template."""
+    # Act
+    prompt = build_prompt(sample_task_minimal)
+
+    # Assert
+    assert "You are a spreadsheet expert" in prompt
+    assert sample_task_minimal.instruction in prompt
+    assert sample_task_minimal.answer_position in prompt
+    assert "### answer_sheet" not in prompt
+    assert "### data_position" not in prompt

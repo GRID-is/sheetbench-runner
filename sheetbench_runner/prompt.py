@@ -1,17 +1,22 @@
-"""Prompt building for SpreadsheetBench tasks."""
+"""Prompt building for SpreadsheetBench tasks.
+
+The prompt is the user message the model sees, verbatim. The solve server
+appends its own context (workbook summary, skill suggestions) after it and
+parses nothing out of it; the workbook id travels in the request body, never
+in the prompt.
+"""
 
 from .entities import Task
 
-# Mirrors the fields surfaced by the built-in SpreadsheetBench inference scripts
-# (instruction, instruction_type, answer_position); workbook_id replaces the
-# file-path fields. answer_sheet and data_position are intentionally withheld so
-# the prompt is never more revealing than the reference benchmark.
-PROMPT_TEMPLATE = """You are a spreadsheet expert.
+# v1 (spreadsheetbench_verified_400) mirrors the fields the reference inference
+# script surfaces: instruction, instruction_type, answer_position. answer_sheet
+# and data_position are intentionally withheld so the prompt is never more
+# revealing than the reference benchmark.
+PROMPT_TEMPLATE_V1 = """You are a spreadsheet expert.
 
 You need to solve the given spreadsheet manipulation question, which contains the following \
 types of information:
 - instruction: The question about spreadsheet manipulation.
-- workbook_id: The ID of the workbook that has been uploaded.
 - instruction_type: There are two values (Cell-Level Manipulation, Sheet-Level \
 Manipulation) used to indicate whether the answer to this question applies only to \
 specific cells or to the entire worksheet.
@@ -24,70 +29,33 @@ Below is the spreadsheet manipulation question you need to solve:
 ### instruction
 {instruction}
 
-### workbook_id
-{workbook_id}
-
 ### instruction_type
 {instruction_type}
 
 ### answer_position
-{answer_position}
-"""
+{answer_position}"""
 
-# v2 datasets (Debugging, Financial_Model, Template) carry no instruction_type, so
-# both its field description and its section are dropped. The answer_position
-# description loses the per-type wording but keeps the scope constraint, which is
-# the part that actually bounds what the agent may touch. Kept as a whole literal
-# rather than assembled from fragments so the text the agent sees stays readable
-# and the v1 template above stays byte-identical to the reference benchmark.
-PROMPT_TEMPLATE_WITHOUT_INSTRUCTION_TYPE = """You are a spreadsheet expert.
-
-You need to solve the given spreadsheet manipulation question, which contains the following \
-types of information:
-- instruction: The question about spreadsheet manipulation.
-- workbook_id: The ID of the workbook that has been uploaded.
-- answer_position: The maximum range of cells you need to modify or fill. You only need to \
-modify or fill in values within the cell range specified by answer_position.
-
-Below is the spreadsheet manipulation question you need to solve:
-### instruction
-{instruction}
-
-### workbook_id
-{workbook_id}
-
-### answer_position
-{answer_position}
-"""
+# v2 (Debugging, Financial_Model, Template) is the instructions block of the
+# upstream SWE-agent config, SpreadsheetBench-2/SWE-agent/config/spreadsheet.yaml
+# at commit c2bf59d, minus its "Input and Output" section, whose role the solve
+# server's "workbook has been loaded" line plays. answer_position is withheld
+# because upstream never shows it to the agent; the evaluator reads it from the
+# dataset.
+PROMPT_TEMPLATE_V2 = """## Task instructions
+You need to process a spreadsheet file based on specific instructions.
+**Instruction:** {instruction}"""
 
 
-def build_prompt(task: Task, workbook_id: str) -> str:
+def build_prompt(task: Task) -> str:
+    """Build the user message for a SpreadsheetBench task.
+
+    A task without instruction_type is a v2 task.
     """
-    Build the prompt for a SpreadsheetBench task.
-
-    Args:
-        task: The task to build the prompt for
-        workbook_id: ID of the uploaded workbook
-
-    Returns:
-        The formatted prompt string
-
-    Raises:
-        ValueError: If workbook_id is empty
-    """
-    if not workbook_id or not workbook_id.strip():
-        raise ValueError("workbook_id cannot be empty")
-
     if task.instruction_type is None:
-        return PROMPT_TEMPLATE_WITHOUT_INSTRUCTION_TYPE.format(
-            instruction=task.instruction,
-            workbook_id=workbook_id,
-            answer_position=task.answer_position,
-        )
+        return PROMPT_TEMPLATE_V2.format(instruction=task.instruction)
 
-    return PROMPT_TEMPLATE.format(
+    return PROMPT_TEMPLATE_V1.format(
         instruction=task.instruction,
-        workbook_id=workbook_id,
         instruction_type=task.instruction_type,
         answer_position=task.answer_position,
     )

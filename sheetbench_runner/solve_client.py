@@ -261,7 +261,7 @@ class SolveClient:
 
         Args:
             workbook_id: ID of the uploaded workbook
-            prompt: The formatted prompt with workbook_id
+            prompt: The task text the model sees, verbatim
 
         Returns:
             SolveResponse with inline transcript and workbook bytes
