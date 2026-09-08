@@ -14,6 +14,7 @@ from rich.progress import BarColumn, Progress, TaskID, TextColumn, TimeElapsedCo
 from rich.table import Table
 from rich.text import Text
 
+from .config import NumericToleranceMode
 from .dataset import Dataset
 from .entities import RunMetadata, Task, TaskResult, TaskStatus
 from .evaluator import Evaluator
@@ -414,6 +415,7 @@ async def run(
     concurrency: int = 4,
     timeout_seconds: int = 3600,
     reevaluate: bool = False,
+    numeric_tolerance_mode: NumericToleranceMode = "relative",
 ) -> RunStats:
     """
     High-level function to run tasks.
@@ -428,13 +430,14 @@ async def run(
         concurrency: Number of parallel tasks
         timeout_seconds: Timeout per task
         reevaluate: Re-evaluate tasks with existing output files
+        numeric_tolerance_mode: V2 numeric comparison mode
 
     Returns:
         RunStats with completion statistics
     """
     # Set up components
     dataset = Dataset(dataset_path)
-    evaluator = Evaluator(dataset_path)
+    evaluator = Evaluator(dataset_path, numeric_tolerance_mode=numeric_tolerance_mode)
     run_dir = RunDirectory(run_dir_path)
 
     # Always load existing results (for resume)
@@ -444,9 +447,38 @@ async def run(
     existing_metadata = run_dir.read_metadata()
     if existing_metadata is not None:
         check_dataset_binding(existing_metadata.dataset_path, dataset_path)
+    metadata_mode_is_recorded = (
+        existing_metadata is not None
+        and "numeric_tolerance_mode" in existing_metadata.model_fields_set
+    )
+    mode_changed = (
+        existing_metadata is not None
+        and existing_metadata.numeric_tolerance_mode != numeric_tolerance_mode
+    )
+    if existing_metadata is not None and not reevaluate and mode_changed:
+        raise ValueError(
+            "Run directory uses numeric tolerance mode "
+            f"{existing_metadata.numeric_tolerance_mode!r}, not {numeric_tolerance_mode!r}; "
+            "use the recorded mode or a new run directory"
+        )
 
     # Re-evaluate existing results if requested
     if reevaluate:
+        if mode_changed:
+            selected_task_ids = {task.id for task in tasks}
+            recorded_task_ids = run_dir.get_recorded_task_ids()
+            unregradeable_task_ids = recorded_task_ids - selected_task_ids
+            for task_id in recorded_task_ids & selected_task_ids:
+                result = run_dir.get_result(task_id)
+                output_file = result.get("output_file") if result else None
+                if not output_file or not (run_dir_path / output_file).exists():
+                    unregradeable_task_ids.add(task_id)
+            if unregradeable_task_ids:
+                raise ValueError(
+                    "Changing numeric tolerance mode requires re-evaluating all recorded "
+                    "results; use an unfiltered task set with every output file present"
+                )
+
         reevaluated = 0
         changed = 0
         for task in tasks:
@@ -486,6 +518,12 @@ async def run(
 
         if reevaluated > 0:
             run_dir._save_results()
+            if existing_metadata is not None and (mode_changed or not metadata_mode_is_recorded):
+                run_dir.write_metadata(
+                    existing_metadata.model_copy(
+                        update={"numeric_tolerance_mode": numeric_tolerance_mode}
+                    )
+                )
             logger.info(f"Re-evaluated {reevaluated} tasks, {changed} changed")
         passed = sum(
             1 for task in tasks if (run_dir.get_result(task.id) or {}).get("result") == "pass"
@@ -529,7 +567,11 @@ async def run(
 
             if isinstance(existing_metadata, LegacyRunMetadata):
                 logger.info(f"Migrating released run metadata at {run_dir_path}")
-                run_dir.migrate_released_metadata(existing_metadata, solve_profile.configuration)
+                run_dir.migrate_released_metadata(
+                    existing_metadata,
+                    solve_profile.configuration,
+                    numeric_tolerance_mode,
+                )
             elif existing_metadata is None:
                 logger.info(f"Creating run metadata at {run_dir_path}")
                 status: dict[str, object] = {}
@@ -545,6 +587,7 @@ async def run(
                         git_hash=git_hash,
                         solve_configuration=solve_profile.configuration,
                         notes=run_dir_path.name,
+                        numeric_tolerance_mode=numeric_tolerance_mode,
                         dataset_path=str(dataset_path.resolve()),
                     )
                 )

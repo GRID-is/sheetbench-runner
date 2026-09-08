@@ -81,6 +81,12 @@ all modification cells match and ≥ 99.8% of regression cells are intact. Each
 v2 entry in `results.json` records `regression_accuracy` and
 `modification_accuracy`, and the run summary reports their averages.
 
+By default, numeric comparison preserves the upstream rule: nonzero values use
+relative tolerance, while absolute tolerance applies only when either value is
+exactly zero. Pass `--numeric-tolerance-mode combined` to use a combined 1%
+relative or `0.01` absolute tolerance. This treats tiny iterative-calculation
+residuals as equivalent without changing the default benchmark semantics.
+
 Caveats:
 
 - `Visualization` is **not** supported — its tasks are graded against a rubric
@@ -98,8 +104,15 @@ If the evaluation logic changes (e.g. a parser fix for edge-case Excel reference
 sheetbench-runner \
   --dataset data/spreadsheetbench_verified_400/ \
   --run-dir data/runs/2026-02-05-my-run \
+  --numeric-tolerance-mode combined \
   --reevaluate
 ```
+
+The selected mode is recorded in `run.json`. Normal resume requires the recorded
+mode; `--reevaluate` may switch modes and records the new mode after regrading.
+Switching modes requires an unfiltered re-evaluation with every recorded output
+file present, preventing one run directory from mixing results graded under
+different modes.
 
 ### Running every category
 
@@ -164,6 +177,9 @@ Options:
   --solve-profile FILE     Solve profile JSON file
   --concurrency INTEGER    Number of parallel tasks (default: 4)
   --timeout INTEGER        Timeout per task in seconds (default: 3600)
+  --numeric-tolerance-mode [relative|combined]
+                           V2 numeric comparison: relative (default) or combined
+                           relative/absolute
   -v, --verbose            Enable verbose logging
   --reevaluate             Re-evaluate all tasks that have output files
                            (useful after parser fixes)
@@ -182,10 +198,13 @@ profile = "profiles/anthropic-profile.json"
 [runner]
 concurrency = 4
 timeout_seconds = 3600
+
+[evaluation]
+numeric_tolerance_mode = "relative"
 ```
 
-CLI options (`--solve-server-url`, `--solve-profile`, `--concurrency`, `--timeout`)
-override their config file equivalents.
+CLI options (`--solve-server-url`, `--solve-profile`, `--concurrency`, `--timeout`,
+`--numeric-tolerance-mode`) override their config file equivalents.
 
 The solve profile is JSON containing `models` and `modelRoles`. Each model's `apiKeyEnv` names the environment variable that holds
 its API key. Models may share an environment variable or name different
@@ -203,8 +222,8 @@ For every non-reevaluation invocation, the runner creates one ephemeral solve
 context before running tasks, uses it for all workbook uploads and solves, and
 deletes it on exit. Run metadata records the profile's configuration, which the
 runner compares against the profile on resume. A pure `--reevaluate` run makes
-no server requests, does not require a solve profile, and does not rewrite
-`run.json`.
+no server requests and does not require a solve profile. It rewrites `run.json`
+only when changing the numeric tolerance mode.
 
 ## Output
 

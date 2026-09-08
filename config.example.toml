@@ -8,3 +8,8 @@ profile = "profiles/anthropic-profile.json" # Non-secret JSON; models name apiKe
 [runner]
 concurrency = 4           # Number of parallel tasks
 timeout_seconds = 3600    # 1 hour timeout per task
+
+[evaluation]
+# "relative" preserves SpreadsheetBench v2 behavior. "combined" also accepts
+# differences within the 0.01 absolute tolerance, including near-zero values.
+numeric_tolerance_mode = "relative"

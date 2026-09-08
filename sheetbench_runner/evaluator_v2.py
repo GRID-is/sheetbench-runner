@@ -9,6 +9,7 @@ evaluator.py (evaluator.py uses a function-local import for dispatch) so the
 helper imports below stay acyclic.
 """
 
+import math
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,6 +18,7 @@ from openpyxl.styles import Font
 from openpyxl.styles.colors import Color
 from openpyxl.worksheet.worksheet import Worksheet
 
+from .config import NumericToleranceMode
 from .entities import EvaluationResult
 from .evaluator import _generate_cell_names, _transform_value
 
@@ -47,7 +49,12 @@ def _is_not_meaningful(v: Any) -> bool:
     return False
 
 
-def compare_cell_value(v1: Any, v2: Any, tolerance: float = 0.01) -> bool:
+def compare_cell_value(
+    v1: Any,
+    v2: Any,
+    tolerance: float = 0.01,
+    numeric_tolerance_mode: NumericToleranceMode = "relative",
+) -> bool:
     """Tolerant value comparison (upstream compare_cell_value)."""
     # ArrayFormula objects compare by formula text
     if hasattr(v1, "text") and hasattr(v2, "text"):
@@ -59,7 +66,7 @@ def compare_cell_value(v1: Any, v2: Any, tolerance: float = 0.01) -> bool:
     # Numeric vs numeric: raw values with tolerance only (no rounding, to
     # avoid boundary artifacts like -0.105 vs -0.10500000000000001)
     if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
-        return _numbers_match(v1, v2, tolerance)
+        return _numbers_match(v1, v2, tolerance, numeric_tolerance_mode)
 
     v1 = _transform_value(v1)
     v2 = _transform_value(v2)
@@ -82,13 +89,20 @@ def compare_cell_value(v1: Any, v2: Any, tolerance: float = 0.01) -> bool:
         return v1.replace("$", "").upper() == v2.replace("$", "").upper()
     # Numeric-looking strings arrive here as parsed floats
     if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
-        return _numbers_match(v1, v2, tolerance)
+        return _numbers_match(v1, v2, tolerance, numeric_tolerance_mode)
     return False
 
 
-def _numbers_match(v1: float, v2: float, tolerance: float) -> bool:
+def _numbers_match(
+    v1: float,
+    v2: float,
+    tolerance: float,
+    numeric_tolerance_mode: NumericToleranceMode,
+) -> bool:
     if v1 == v2:
         return True
+    if numeric_tolerance_mode == "combined":
+        return math.isclose(v1, v2, rel_tol=tolerance, abs_tol=tolerance)
     if v1 == 0 or v2 == 0:
         return abs(v1 - v2) <= tolerance
     return abs(v1 - v2) / max(abs(v1), abs(v2)) <= tolerance
@@ -113,7 +127,9 @@ def _find_sheet(wb: openpyxl.Workbook, name: str) -> Worksheet | None:
     return None
 
 
-def compare_cell_formula(f1: Any, f2: Any) -> bool:
+def compare_cell_formula(
+    f1: Any, f2: Any, numeric_tolerance_mode: NumericToleranceMode = "relative"
+) -> bool:
     """Compare formula-level cell values (upstream compare_cell_formula)."""
     # ArrayFormula objects (CSE array formulas) compare by formula text
     if hasattr(f1, "text") and hasattr(f2, "text"):
@@ -134,7 +150,7 @@ def compare_cell_formula(f1: Any, f2: Any) -> bool:
     if f1 in empty and f2 in empty:
         return True
 
-    return compare_cell_value(f1, f2)
+    return compare_cell_value(f1, f2, numeric_tolerance_mode=numeric_tolerance_mode)
 
 
 # Standard Excel theme color map (Office default theme)
@@ -217,14 +233,26 @@ class _LazyFormulaWorkbooks:
             wb.close()
 
 
-def _compare_cells(cell1: Any, cell2: Any, with_font_color: bool, with_formula: bool) -> bool:
+def _compare_cells(
+    cell1: Any,
+    cell2: Any,
+    with_font_color: bool,
+    with_formula: bool,
+    numeric_tolerance_mode: NumericToleranceMode,
+) -> bool:
     if with_formula:
-        return compare_cell_formula(cell1.value, cell2.value)
+        return compare_cell_formula(cell1.value, cell2.value, numeric_tolerance_mode)
     if with_font_color:
-        return compare_cell_value(cell1.value, cell2.value) and compare_font_color(
-            cell1.font, cell2.font
-        )
-    return compare_cell_value(cell1.value, cell2.value)
+        return compare_cell_value(
+            cell1.value,
+            cell2.value,
+            numeric_tolerance_mode=numeric_tolerance_mode,
+        ) and compare_font_color(cell1.font, cell2.font)
+    return compare_cell_value(
+        cell1.value,
+        cell2.value,
+        numeric_tolerance_mode=numeric_tolerance_mode,
+    )
 
 
 def classify_cells_by_modification(
@@ -235,6 +263,7 @@ def classify_cells_by_modification(
     with_font_color: bool,
     with_formula: bool,
     formula_books: _LazyFormulaWorkbooks | None,
+    numeric_tolerance_mode: NumericToleranceMode = "relative",
 ) -> tuple[list[str], list[str]]:
     """
     Split the range into regression cells (input == golden, must stay
@@ -257,9 +286,19 @@ def classify_cells_by_modification(
             ws_in_f = formula_books.sheet("input", sheet_name)
             ws_gold_f = formula_books.sheet("golden", sheet_name)
             assert ws_in_f is not None and ws_gold_f is not None
-            is_same = compare_cell_formula(ws_in_f[cell_name].value, ws_gold_f[cell_name].value)
+            is_same = compare_cell_formula(
+                ws_in_f[cell_name].value,
+                ws_gold_f[cell_name].value,
+                numeric_tolerance_mode,
+            )
         else:
-            is_same = _compare_cells(cell_in, cell_gold, with_font_color, with_formula)
+            is_same = _compare_cells(
+                cell_in,
+                cell_gold,
+                with_font_color,
+                with_formula,
+                numeric_tolerance_mode,
+            )
         (regression if is_same else modification).append(cell_name)
 
     return regression, modification
@@ -274,6 +313,7 @@ def compare_classified_cells(
     with_font_color: bool,
     with_formula: bool,
     formula_books: _LazyFormulaWorkbooks | None,
+    numeric_tolerance_mode: NumericToleranceMode = "relative",
 ) -> tuple[int, int, int, int, list[str]]:
     """
     Compare output vs golden for both cell groups.
@@ -308,9 +348,19 @@ def compare_classified_cells(
                 ws_gold_f = formula_books.sheet("golden", sheet_name)
                 ws_out_f = formula_books.sheet("output", sheet_name)
                 assert ws_gold_f is not None and ws_out_f is not None
-                matched = compare_cell_formula(ws_gold_f[name].value, ws_out_f[name].value)
+                matched = compare_cell_formula(
+                    ws_gold_f[name].value,
+                    ws_out_f[name].value,
+                    numeric_tolerance_mode,
+                )
             else:
-                matched = _compare_cells(cell_gold, cell_out, with_font_color, with_formula)
+                matched = _compare_cells(
+                    cell_gold,
+                    cell_out,
+                    with_font_color,
+                    with_formula,
+                    numeric_tolerance_mode,
+                )
             if matched:
                 correct += 1
             else:
@@ -343,6 +393,7 @@ def compare_workbooks(
     ranges: list[tuple[str, str]],
     with_font_color: bool = False,
     with_formula: bool = False,
+    numeric_tolerance_mode: NumericToleranceMode = "relative",
 ) -> EvaluationResult:
     """
     Grade an output workbook against golden with the v2 regression/
@@ -375,6 +426,7 @@ def compare_workbooks(
                 with_font_color,
                 with_formula,
                 formula_books,
+                numeric_tolerance_mode,
             )
             rc, rt, mc, mt, msgs = compare_classified_cells(
                 wb_golden,
@@ -385,6 +437,7 @@ def compare_workbooks(
                 with_font_color,
                 with_formula,
                 formula_books,
+                numeric_tolerance_mode,
             )
             reg_correct += rc
             reg_total += rt

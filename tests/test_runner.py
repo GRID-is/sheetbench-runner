@@ -4,7 +4,7 @@ import base64
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -12,7 +12,9 @@ import pytest
 import respx
 
 from sheetbench_runner import runner as runner_module
+from sheetbench_runner.config import NumericToleranceMode
 from sheetbench_runner.entities import EvaluationResult, SolveUsage, Task
+from sheetbench_runner.evaluator import Evaluator
 from sheetbench_runner.run_directory import RunDirectory, RunMetadataError
 from sheetbench_runner.runner import RunStats, TaskRunner, run
 from sheetbench_runner.solve_client import (
@@ -121,6 +123,7 @@ async def test_run_creates_and_deletes_exactly_once_and_stores_profile_metadata(
         solve_server_url="http://localhost:3000",
         solve_profile_path=write_profile(tmp_path / "profile.json"),
         tasks=[sample_task],
+        numeric_tolerance_mode="combined",
     )
 
     assert create_route.call_count == 1
@@ -131,6 +134,7 @@ async def test_run_creates_and_deletes_exactly_once_and_stores_profile_metadata(
     assert run_data["schema_version"] == 2
     assert run_data["model"] == "opaque-model"
     assert run_data["solve_configuration"] == PROFILE_CONFIGURATION
+    assert run_data["numeric_tolerance_mode"] == "combined"
 
 
 @respx.mock
@@ -187,6 +191,119 @@ async def test_matching_resume_creates_context_and_skips_completed_tasks(
     assert stats.completed == 1
     assert create_route.call_count == 1
     assert delete_route.call_count == 1
+
+
+@respx.mock
+async def test_resume_rejects_a_different_numeric_tolerance_mode(
+    tmp_path: Path,
+    sample_dataset_dir: Path,
+    sample_task: Task,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPAQUE_ENV", "key")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(canonical_run_json())
+    (run_dir / "results.json").write_text("[]")
+
+    with pytest.raises(ValueError, match="numeric tolerance mode"):
+        await run(
+            dataset_path=sample_dataset_dir,
+            run_dir_path=run_dir,
+            solve_server_url="http://localhost:3000",
+            solve_profile_path=write_profile(tmp_path / "profile.json"),
+            tasks=[sample_task],
+            numeric_tolerance_mode="combined",
+        )
+
+    assert not respx.calls
+
+
+@pytest.mark.parametrize("metadata_json", [canonical_run_json, released_run_json])
+@pytest.mark.parametrize("numeric_tolerance_mode", ["relative", "combined"])
+async def test_reevaluate_records_the_selected_numeric_tolerance_mode(
+    tmp_path: Path,
+    sample_dataset_dir: Path,
+    sample_task: Task,
+    monkeypatch: pytest.MonkeyPatch,
+    metadata_json: Callable[[], str],
+    numeric_tolerance_mode: NumericToleranceMode,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(metadata_json())
+    (run_dir / "output.xlsx").write_bytes(b"output")
+    (run_dir / "results.json").write_text(
+        json.dumps(
+            [
+                {
+                    "task_id": sample_task.id,
+                    "result": "fail",
+                    "output_file": "output.xlsx",
+                }
+            ]
+        )
+    )
+    monkeypatch.setattr(
+        Evaluator,
+        "evaluate",
+        Mock(return_value=EvaluationResult(passed=True, message="")),
+    )
+
+    await run(
+        dataset_path=sample_dataset_dir,
+        run_dir_path=run_dir,
+        solve_server_url="http://localhost:3000",
+        solve_profile_path=None,
+        tasks=[sample_task],
+        reevaluate=True,
+        numeric_tolerance_mode=numeric_tolerance_mode,
+    )
+
+    run_data = json.loads((run_dir / "run.json").read_text())
+    assert run_data["numeric_tolerance_mode"] == numeric_tolerance_mode
+
+
+async def test_reevaluate_rejects_partial_numeric_tolerance_mode_switch(
+    tmp_path: Path,
+    sample_dataset_dir: Path,
+    sample_task: Task,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(canonical_run_json())
+    (run_dir / "output.xlsx").write_bytes(b"output")
+    (run_dir / "other-output.xlsx").write_bytes(b"output")
+    (run_dir / "results.json").write_text(
+        json.dumps(
+            [
+                {
+                    "task_id": sample_task.id,
+                    "result": "fail",
+                    "output_file": "output.xlsx",
+                },
+                {
+                    "task_id": "other-task",
+                    "result": "fail",
+                    "output_file": "other-output.xlsx",
+                },
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match="all recorded results"):
+        await run(
+            dataset_path=sample_dataset_dir,
+            run_dir_path=run_dir,
+            solve_server_url="http://localhost:3000",
+            solve_profile_path=None,
+            tasks=[sample_task],
+            reevaluate=True,
+            numeric_tolerance_mode="combined",
+        )
+
+    run_data = json.loads((run_dir / "run.json").read_text())
+    assert "numeric_tolerance_mode" not in run_data
 
 
 @pytest.mark.parametrize(
@@ -273,6 +390,7 @@ async def test_released_run_is_migrated_to_canonical_metadata_after_context_crea
         "solve_configuration": PROFILE_CONFIGURATION,
         "test_set": 1,
         "notes": "released run",
+        "numeric_tolerance_mode": "relative",
         "dataset_path": None,
         "created_at": "2026-01-02T03:04:05",
     }
