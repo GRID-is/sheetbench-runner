@@ -84,52 +84,51 @@ def test_build_prompt_preserves_formatting():
 
 
 class TestV2Prompt:
-    """v2 tasks carry no instruction_type, so the prompt must omit it entirely."""
+    """v2 tasks post upstream's Important block, the instruction and the workbook id."""
 
-    def test_omits_instruction_type_section(self, sample_task_v2: Task):
-        """A task without instruction_type gets no ### instruction_type section."""
+    def test_output_is_exactly_important_block_instruction_and_workbook_id(
+        self, sample_task_v2: Task
+    ):
+        """No persona preamble, no field descriptions, no answer_position, no instruction_type."""
         # Act
         prompt = build_prompt(sample_task_v2, "wb-01-01")
 
         # Assert
-        assert "### instruction_type" not in prompt
-        assert "None" not in prompt
-
-    def test_omits_instruction_type_field_description(self, sample_task_v2: Task):
-        """The field-list preamble must not describe a field the prompt omits."""
-        # Act
-        prompt = build_prompt(sample_task_v2, "wb-01-01")
-
-        # Assert
-        assert "- instruction_type:" not in prompt
-        assert "Cell-Level Manipulation" not in prompt
-        assert "Sheet-Level Manipulation" not in prompt
-
-    def test_keeps_instruction_workbook_and_answer_position(self, sample_task_v2: Task):
-        """Everything else the agent needs is still present, in order."""
-        # Act
-        prompt = build_prompt(sample_task_v2, "wb-01-01")
-
-        # Assert
-        assert sample_task_v2.instruction in prompt
-        assert "wb-01-01" in prompt
-        assert sample_task_v2.answer_position in prompt
-
-        sections = ["### instruction", "### workbook_id", "### answer_position"]
-        positions = [prompt.find(s) for s in sections]
-        assert -1 not in positions
-        assert positions == sorted(positions)
-
-    def test_keeps_answer_position_scope_constraint(self, sample_task_v2: Task):
-        """The 'only modify within answer_position' constraint is retained."""
-        # Act
-        prompt = build_prompt(sample_task_v2, "wb-01-01")
-
-        # Assert
-        assert (
-            "You only need to modify or fill in values within the cell range "
-            "specified by answer_position" in prompt
+        assert prompt == (
+            "## Important\n"
+            "- When completing spreadsheet tasks, strictly avoid altering any cells that "
+            "already contain values unless explicitly instructed. Modify only the cells "
+            "that are required for the task.\n"
+            "- You need to complete the instructions and ensure that the original "
+            "formatting is preserved as much as possible.\n"
+            "\n"
+            "### instruction\n"
+            "Complete the bond accounting schedule\n"
+            "\n"
+            "### workbook_id\n"
+            "wb-01-01\n"
         )
+
+    def test_withholds_answer_position(self, sample_task_v2: Task):
+        """The graded range is for the evaluator; upstream never shows it to the agent."""
+        # Act
+        prompt = build_prompt(sample_task_v2, "wb-01-01")
+
+        # Assert
+        assert "answer_position" not in prompt
+        assert sample_task_v2.answer_position not in prompt
+
+    def test_important_block_precedes_instruction_and_workbook_id_follows(
+        self, sample_task_v2: Task
+    ):
+        """The server parses the instruction from its heading to the next ### heading, so
+        the block must come before it and workbook_id after it."""
+        # Act
+        prompt = build_prompt(sample_task_v2, "wb-01-01")
+
+        # Assert
+        assert prompt.index("## Important") < prompt.index("### instruction")
+        assert prompt.index("### instruction") < prompt.index("### workbook_id")
 
 
 def test_build_prompt_v1_output_is_unchanged():

@@ -2,11 +2,11 @@
 
 from .entities import Task
 
-# Mirrors the fields surfaced by the built-in SpreadsheetBench inference scripts
-# (instruction, instruction_type, answer_position); workbook_id replaces the
-# file-path fields. answer_sheet and data_position are intentionally withheld so
-# the prompt is never more revealing than the reference benchmark.
-PROMPT_TEMPLATE = """You are a spreadsheet expert.
+# v1 (spreadsheetbench_verified_400) mirrors the fields the reference inference
+# scripts surface (instruction, instruction_type, answer_position); workbook_id
+# replaces the file-path fields. answer_sheet and data_position are intentionally
+# withheld so the prompt is never more revealing than the reference benchmark.
+PROMPT_TEMPLATE_V1 = """You are a spreadsheet expert.
 
 You need to solve the given spreadsheet manipulation question, which contains the following \
 types of information:
@@ -34,30 +34,27 @@ Below is the spreadsheet manipulation question you need to solve:
 {answer_position}
 """
 
-# v2 datasets (Debugging, Financial_Model, Template) carry no instruction_type, so
-# both its field description and its section are dropped. The answer_position
-# description loses the per-type wording but keeps the scope constraint, which is
-# the part that actually bounds what the agent may touch. Kept as a whole literal
-# rather than assembled from fragments so the text the agent sees stays readable
-# and the v1 template above stays byte-identical to the reference benchmark.
-PROMPT_TEMPLATE_WITHOUT_INSTRUCTION_TYPE = """You are a spreadsheet expert.
+# v2 (Debugging, Financial_Model, Template) posts upstream's "Important" block
+# (SpreadsheetBench-2/SWE-agent/config/spreadsheet.yaml, instance_template) and
+# the instruction. The solve server's system prompt already covers the persona
+# and the tools, and answer_position is withheld: upstream never shows the graded
+# range to the agent and the evaluator reads it from the dataset. The two ###
+# sections are the ones the server's parser requires. The block goes before the
+# instruction heading, as upstream orders it, and because the parser reads the
+# instruction up to the next ### heading: anything after it would become part of
+# the parsed instruction. The server strips workbook_id before the model sees it.
+PROMPT_TEMPLATE_V2 = """## Important
+- When completing spreadsheet tasks, strictly avoid altering any cells that already \
+contain values unless explicitly instructed. Modify only the cells that are required \
+for the task.
+- You need to complete the instructions and ensure that the original formatting is \
+preserved as much as possible.
 
-You need to solve the given spreadsheet manipulation question, which contains the following \
-types of information:
-- instruction: The question about spreadsheet manipulation.
-- workbook_id: The ID of the workbook that has been uploaded.
-- answer_position: The maximum range of cells you need to modify or fill. You only need to \
-modify or fill in values within the cell range specified by answer_position.
-
-Below is the spreadsheet manipulation question you need to solve:
 ### instruction
 {instruction}
 
 ### workbook_id
 {workbook_id}
-
-### answer_position
-{answer_position}
 """
 
 
@@ -79,13 +76,12 @@ def build_prompt(task: Task, workbook_id: str) -> str:
         raise ValueError("workbook_id cannot be empty")
 
     if task.instruction_type is None:
-        return PROMPT_TEMPLATE_WITHOUT_INSTRUCTION_TYPE.format(
+        return PROMPT_TEMPLATE_V2.format(
             instruction=task.instruction,
             workbook_id=workbook_id,
-            answer_position=task.answer_position,
         )
 
-    return PROMPT_TEMPLATE.format(
+    return PROMPT_TEMPLATE_V1.format(
         instruction=task.instruction,
         workbook_id=workbook_id,
         instruction_type=task.instruction_type,
