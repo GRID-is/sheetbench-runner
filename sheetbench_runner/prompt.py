@@ -34,15 +34,6 @@ Below is the spreadsheet manipulation question you need to solve:
 {answer_position}
 """
 
-# v2 (Debugging, Financial_Model, Template) posts upstream's "Important" block
-# (SpreadsheetBench-2/SWE-agent/config/spreadsheet.yaml, instance_template) and
-# the instruction. The solve server's system prompt already covers the persona
-# and the tools, and answer_position is withheld: upstream never shows the graded
-# range to the agent and the evaluator reads it from the dataset. The two ###
-# sections are the ones the server's parser requires. The block goes before the
-# instruction heading, as upstream orders it, and because the parser reads the
-# instruction up to the next ### heading: anything after it would become part of
-# the parsed instruction. The server strips workbook_id before the model sees it.
 PROMPT_TEMPLATE_V2 = """## Important
 - When completing spreadsheet tasks, strictly avoid altering any cells that already \
 contain values unless explicitly instructed. Modify only the cells that are required \
