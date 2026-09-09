@@ -6,7 +6,7 @@ from pathlib import Path
 
 import asyncclick as click
 
-from .config import Config
+from .config import Config, NumericToleranceMode
 from .dataset import Dataset
 from .runner import run
 
@@ -90,6 +90,12 @@ def load_task_ids_from_file(file_path: Path) -> set[str]:
     help="Timeout per task in seconds (default: 3600)",
 )
 @click.option(
+    "--numeric-tolerance-mode",
+    type=click.Choice(["relative", "combined"]),
+    default=None,
+    help="V2 numeric comparison: relative (default) or combined relative/absolute",
+)
+@click.option(
     "-v",
     "--verbose",
     is_flag=True,
@@ -110,6 +116,7 @@ async def cli(
     solve_profile: Path | None,
     concurrency: int | None,
     timeout: int | None,
+    numeric_tolerance_mode: NumericToleranceMode | None,
     verbose: bool,
     reevaluate: bool,
 ) -> None:
@@ -127,6 +134,7 @@ async def cli(
         solve_profile=solve_profile.resolve() if solve_profile else None,
         concurrency=concurrency,
         timeout_seconds=timeout,
+        numeric_tolerance_mode=numeric_tolerance_mode,
     )
 
     # Load dataset
@@ -159,6 +167,7 @@ async def cli(
             concurrency=cfg.concurrency,
             timeout_seconds=cfg.timeout_seconds,
             reevaluate=reevaluate,
+            numeric_tolerance_mode=cfg.numeric_tolerance_mode,
         )
     except ValueError as e:
         logger.error(str(e))

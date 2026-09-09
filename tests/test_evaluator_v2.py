@@ -55,6 +55,16 @@ class TestCompareCellValue:
         # Raw comparison, not round-to-2: these differ by ~1e-17
         assert compare_cell_value(-0.105, -0.10500000000000001) is True
 
+    def test_combined_tolerance_accepts_two_effectively_zero_values(self):
+        golden = -8.71440022365277e-8
+        output = -5.4001247917767614e-12
+
+        assert compare_cell_value(golden, output) is False
+        assert compare_cell_value(golden, output, numeric_tolerance_mode="combined") is True
+
+    def test_combined_tolerance_does_not_match_infinity_to_finite_value(self):
+        assert compare_cell_value(float("inf"), 1.0, numeric_tolerance_mode="combined") is False
+
     # -- "not meaningful" equivalence --
 
     @pytest.mark.parametrize(
@@ -330,6 +340,26 @@ class TestCompareWorkbooks:
         assert result.modification_accuracy == 0.5
         assert result.passed is False
 
+    def test_combined_tolerance_applies_to_workbook_grading(self, temp_dir):
+        golden_residual = -8.71440022365277e-8
+        output_residual = -5.4001247917767614e-12
+        inp, gold, out = self.make_files(
+            temp_dir,
+            {"A1": 1, "A2": 0},
+            {"A1": golden_residual, "A2": 0},
+            {"A1": output_residual, "A2": 0},
+        )
+
+        result = compare_workbooks(
+            inp,
+            gold,
+            out,
+            [("Model", "A1:A2")],
+            numeric_tolerance_mode="combined",
+        )
+
+        assert result.passed is True
+
 
 def make_v2_task(
     dataset_dir,
@@ -366,6 +396,22 @@ class TestEvaluatorV2Dispatch:
         assert result.passed is True
         assert result.regression_accuracy == 1.0
         assert result.modification_accuracy == 1.0
+
+    def test_v2_task_uses_configured_numeric_tolerance_mode(self, temp_dir):
+        task = make_v2_task(
+            temp_dir,
+            input_cells={"A1": 1, "A2": 0},
+            golden_cells={"A1": -8.71440022365277e-8, "A2": 0},
+            answer_position="'Model'!A1:A2",
+        )
+        output = build_workbook(
+            temp_dir / "out.xlsx",
+            cells={"A1": -5.4001247917767614e-12, "A2": 0},
+        )
+
+        result = Evaluator(temp_dir, numeric_tolerance_mode="combined").evaluate(task, output)
+
+        assert result.passed is True
 
     def test_v1_task_untouched(self, temp_dir):
         # v1 tasks still route to strict grading and carry no ratios

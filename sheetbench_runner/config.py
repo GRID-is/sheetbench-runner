@@ -3,11 +3,14 @@
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
 
 if sys.version_info >= (3, 11):
     import tomllib
 else:
     import tomli as tomllib
+
+NumericToleranceMode = Literal["relative", "combined"]
 
 
 @dataclass(frozen=True)
@@ -18,6 +21,7 @@ class Config:
     solve_profile: Path | None = None
     concurrency: int = 4
     timeout_seconds: int = 3600  # 1 hour per task
+    numeric_tolerance_mode: NumericToleranceMode = "relative"
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
@@ -34,15 +38,20 @@ class Config:
 
         runner = data.get("runner", {})
         solve = data.get("solve", {})
+        evaluation = data.get("evaluation", {})
         profile_value = solve.get("profile")
         solve_profile = Path(profile_value) if isinstance(profile_value, str) else None
         if solve_profile is not None and not solve_profile.is_absolute():
             solve_profile = path.parent / solve_profile
+        numeric_tolerance_mode = evaluation.get("numeric_tolerance_mode", "relative")
+        if numeric_tolerance_mode not in {"relative", "combined"}:
+            raise ValueError("evaluation.numeric_tolerance_mode must be 'relative' or 'combined'")
         return cls(
             solve_server_url=solve.get("url", cls.solve_server_url),
             solve_profile=solve_profile,
             concurrency=runner.get("concurrency", cls.concurrency),
             timeout_seconds=runner.get("timeout_seconds", cls.timeout_seconds),
+            numeric_tolerance_mode=cast(NumericToleranceMode, numeric_tolerance_mode),
         )
 
     def with_overrides(
@@ -51,6 +60,7 @@ class Config:
         solve_profile: Path | None = None,
         concurrency: int | None = None,
         timeout_seconds: int | None = None,
+        numeric_tolerance_mode: NumericToleranceMode | None = None,
     ) -> "Config":
         """Create a new Config with CLI overrides applied."""
         return Config(
@@ -61,5 +71,10 @@ class Config:
             concurrency=concurrency if concurrency is not None else self.concurrency,
             timeout_seconds=(
                 timeout_seconds if timeout_seconds is not None else self.timeout_seconds
+            ),
+            numeric_tolerance_mode=(
+                numeric_tolerance_mode
+                if numeric_tolerance_mode is not None
+                else self.numeric_tolerance_mode
             ),
         )

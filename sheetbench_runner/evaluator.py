@@ -13,6 +13,7 @@ from typing import Any
 import openpyxl
 from openpyxl.utils.cell import SHEETRANGE_RE
 
+from .config import NumericToleranceMode
 from .entities import EvaluationResult, Task
 
 
@@ -304,7 +305,11 @@ def _compare_cells(
 class Evaluator:
     """Evaluates task outputs against golden files."""
 
-    def __init__(self, dataset_path: Path):
+    def __init__(
+        self,
+        dataset_path: Path,
+        numeric_tolerance_mode: NumericToleranceMode = "relative",
+    ):
         """
         Initialize the evaluator.
 
@@ -312,6 +317,7 @@ class Evaluator:
             dataset_path: Path to the SpreadsheetBench dataset directory
         """
         self.dataset_path = dataset_path
+        self.numeric_tolerance_mode = numeric_tolerance_mode
 
     def evaluate(self, task: Task, output_path: Path) -> EvaluationResult:
         """
@@ -373,6 +379,7 @@ class Evaluator:
                 ranges,
                 with_font_color=with_font_color,
                 with_formula=with_formula,
+                numeric_tolerance_mode=self.numeric_tolerance_mode,
             )
         except Exception as e:
             # Load-error tasks score 0.0, matching upstream's summary math

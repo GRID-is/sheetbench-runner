@@ -164,6 +164,7 @@ class RunMetadata(BaseModel):
     solve_configuration: SolveConfiguration
     test_set: StrictInt | None = None
     notes: str = ""
+    numeric_tolerance_mode: Literal["relative", "combined"] = "relative"
     # Dataset directory this run was created against. Task ids overlap across
     # v2 categories, so regrading against the wrong dataset silently grades
     # against the wrong goldens; recording the binding lets tooling validate.

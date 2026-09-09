@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .config import NumericToleranceMode
 from .entities import RunMetadata, TaskResult, TaskStatus
 from .solve_profile import SolveConfiguration
 
@@ -24,12 +25,21 @@ class LegacyRunMetadata(BaseModel):
     git_hash: str = "unknown"
     test_set: int | None = None
     notes: str = ""
+    numeric_tolerance_mode: NumericToleranceMode = "relative"
     dataset_path: str | None = None
     created_at: datetime = Field(default_factory=datetime.now)
 
-    def to_canonical(self, solve_configuration: SolveConfiguration) -> RunMetadata:
+    def to_canonical(
+        self,
+        solve_configuration: SolveConfiguration,
+        numeric_tolerance_mode: NumericToleranceMode = "relative",
+    ) -> RunMetadata:
         """Build canonical metadata, keeping the historical run's own record."""
-        return RunMetadata(**self.model_dump(), solve_configuration=solve_configuration)
+        return RunMetadata(
+            **self.model_dump(exclude={"numeric_tolerance_mode"}),
+            solve_configuration=solve_configuration,
+            numeric_tolerance_mode=numeric_tolerance_mode,
+        )
 
 
 class RunDirectory:
@@ -114,6 +124,10 @@ class RunDirectory:
         """Get the result dict for a task, or None if not found."""
         return self._results.get(task_id)
 
+    def get_recorded_task_ids(self) -> set[str]:
+        """Get the task ids represented in results.json."""
+        return set(self._results)
+
     def record_result(self, result: TaskResult) -> None:
         """
         Record a task result to results.json.
@@ -136,8 +150,8 @@ class RunDirectory:
         with open(self.results_path, "w") as f:
             json.dump(results_list, f, indent=2)
 
-    def write_metadata(self, metadata: RunMetadata) -> None:
-        """Write canonical metadata to run.json."""
+    def write_metadata(self, metadata: RunMetadata | LegacyRunMetadata) -> None:
+        """Write run metadata to run.json."""
         self.run_json_path.write_text(json.dumps(metadata.model_dump(mode="json"), indent=2))
 
     def read_metadata(self) -> RunMetadata | LegacyRunMetadata | None:
@@ -164,9 +178,12 @@ class RunDirectory:
             raise RunMetadataError(f"{self.run_json_path} is not valid released metadata") from e
 
     def migrate_released_metadata(
-        self, legacy: LegacyRunMetadata, solve_configuration: SolveConfiguration
+        self,
+        legacy: LegacyRunMetadata,
+        solve_configuration: SolveConfiguration,
+        numeric_tolerance_mode: NumericToleranceMode = "relative",
     ) -> RunMetadata:
         """Rewrite a released-format run.json as canonical metadata."""
-        metadata = legacy.to_canonical(solve_configuration)
+        metadata = legacy.to_canonical(solve_configuration, numeric_tolerance_mode)
         self.write_metadata(metadata)
         return metadata

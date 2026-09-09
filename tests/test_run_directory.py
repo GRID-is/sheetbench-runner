@@ -70,6 +70,7 @@ def test_create_new_run_directory(temp_dir: Path):
         "solve_configuration": SOLVE_CONFIGURATION,
         "test_set": 1,
         "notes": "Test run",
+        "numeric_tolerance_mode": "relative",
         "dataset_path": None,
         "created_at": metadata.created_at.isoformat(),
     }
@@ -446,6 +447,7 @@ def test_migrating_released_metadata_preserves_history(temp_dir: Path) -> None:
         "solve_configuration": SOLVE_CONFIGURATION,
         "test_set": 1,
         "notes": "released run",
+        "numeric_tolerance_mode": "relative",
         "dataset_path": None,
         "created_at": "2026-01-02T03:04:05",
     }
