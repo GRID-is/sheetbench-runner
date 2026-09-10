@@ -303,12 +303,13 @@ except Exception as e:
                 pass
 
 
-def open_all_spreadsheet_in_dir(dir_path: str, recursive: bool = True) -> None:
+def open_all_spreadsheet_in_dir(dir_path: str, recursive: bool = True, suffix: str = "output.xlsx") -> None:
     """Open all Excel files in a directory and save them.
 
     Args:
         dir_path: Directory path
         recursive: Whether to recursively traverse subdirectories, defaults to True
+        suffix: Only files whose name ends with this are processed; ".xlsx" selects every workbook
     """
     if not os.path.isdir(dir_path):
         print(f"Not a valid dir path: {dir_path}")
@@ -325,11 +326,11 @@ def open_all_spreadsheet_in_dir(dir_path: str, recursive: bool = True) -> None:
         if recursive:
             for root, dirs, files in os.walk(dir_path):
                 for filename in files:
-                    if filename.endswith("output.xlsx"):
+                    if filename.endswith(suffix) and not filename.startswith("~$"):
                         files_to_process.append(os.path.join(root, filename))
         else:
             for filename in os.listdir(dir_path):
-                if filename.endswith("output.xlsx"):
+                if filename.endswith(suffix) and not filename.startswith("~$"):
                     files_to_process.append(os.path.join(dir_path, filename))
 
         print(f"Found {len(files_to_process)} files to process")
@@ -347,10 +348,12 @@ if __name__ == '__main__':
     parser.add_argument('--dir_path', type=str, help='the dir path of spreadsheets')
     parser.add_argument('--no-recursive', action='store_true',
                         help='do not recursively process subdirectories')
+    parser.add_argument('--suffix', type=str, default='output.xlsx',
+                        help='process only files ending with this (default: output.xlsx; use .xlsx for every workbook)')
 
     opt = parser.parse_args()
 
     if opt.dir_path:
-        open_all_spreadsheet_in_dir(opt.dir_path, recursive=not opt.no_recursive)
+        open_all_spreadsheet_in_dir(opt.dir_path, recursive=not opt.no_recursive, suffix=opt.suffix)
     else:
         parser.print_help()
