@@ -206,8 +206,9 @@ class DryRunServer:
         scratch.mkdir(exist_ok=True)
         entry = scratch / "dry-run-server.ts"
         entry.write_text(DRY_RUN_SERVER_TS)
-        # Like the dev server: regenerate the skill bundle and resolve the core package to
-        # its sources, so the prompt reflects the checkout without a package build.
+        # Like the dev server: regenerate the skill bundle, and run from the app directory so
+        # its tsconfig paths resolve the core package to its sources; the prompt then
+        # reflects the checkout without a package build.
         core = self.app_dir.parent.parent / "packages" / "core"
         subprocess.run(
             ["node", str(core / "scripts" / "bundle-skills.mjs")],
@@ -218,7 +219,7 @@ class DryRunServer:
         # Logs go to a temp file rather than a pipe so a chatty server never blocks on it.
         self.stderr = tempfile.SpooledTemporaryFile(max_size=1 << 20)
         self.process = subprocess.Popen(
-            [str(tsx), "--conditions=source", str(entry)],
+            [str(tsx), str(entry)],
             cwd=self.app_dir,
             env={**os.environ, "PORT": str(self.port)},
             stdout=subprocess.DEVNULL,
