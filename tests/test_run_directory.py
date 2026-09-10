@@ -63,7 +63,7 @@ def test_create_new_run_directory(temp_dir: Path):
     with open(run_path / "run.json") as f:
         run_data = json.load(f)
     assert run_data == {
-        "schema_version": 2,
+        "schema_version": 3,
         "model": "claude-sonnet-5",
         "git_hash": "abc123",
         "solve_configuration": SOLVE_CONFIGURATION,
@@ -308,78 +308,42 @@ def test_read_metadata_decodes_canonical_document(temp_dir: Path) -> None:
     assert actual == metadata
 
 
-@pytest.mark.parametrize(
-    ("recorded_model", "migrated_request"),
-    [
-        (
-            {"transport": "anthropic", "model": "m", "apiKeyEnv": "K", "options": None},
-            {"model": "m"},
-        ),
-        (
-            {"transport": "anthropic", "model": "m", "apiKeyEnv": "K"},
-            {"model": "m"},
-        ),
-        (
-            {
-                "transport": "anthropic",
-                "model": "m",
-                "apiKeyEnv": "K",
-                "options": {"maxOutputTokens": 7},
-            },
-            {"model": "m", "max_tokens": 7},
-        ),
-        (
-            {
-                "transport": "openai-responses",
-                "model": "m",
-                "apiKeyEnv": "K",
-                "options": {"maxOutputTokens": 7},
-            },
-            {"model": "m", "max_output_tokens": 7},
-        ),
-        (
-            {
-                "transport": "openai-compatible",
-                "model": "m",
-                "apiKeyEnv": "K",
-                "options": {"maxOutputTokens": 7},
-            },
-            {"model": "m", "max_completion_tokens": 7},
-        ),
-    ],
-    ids=["options-null", "options-absent", "anthropic", "responses", "compatible"],
-)
-def test_read_metadata_migrates_a_model_recorded_before_request_bodies(
-    temp_dir: Path, recorded_model: dict[str, Any], migrated_request: dict[str, Any]
-) -> None:
+def test_read_metadata_reads_a_schema_2_document_as_legacy(temp_dir: Path) -> None:
     # Arrange
-    run_path = temp_dir / "old-run"
+    run_path = temp_dir / "schema-2-run"
     run_path.mkdir()
     document = {
         "schema_version": 2,
         "model": "m",
         "git_hash": "h",
-        "solve_configuration": {"models": {"d": recorded_model}, "modelRoles": {"default": "d"}},
+        "solve_configuration": {
+            "models": {
+                "d": {"transport": "anthropic", "model": "m", "apiKeyEnv": "K", "options": None}
+            },
+            "modelRoles": {"default": "d"},
+        },
+        "test_set": 3,
+        "notes": "old shape",
+        "numeric_tolerance_mode": "combined",
+        "dataset_path": "/data/v1",
         "created_at": "2026-08-26T00:00:00",
     }
     (run_path / "run.json").write_text(json.dumps(document))
-    expected = {
-        "models": {
-            "d": {
-                "transport": recorded_model["transport"],
-                "apiKeyEnv": "K",
-                "request": migrated_request,
-            }
-        },
-        "modelRoles": {"default": "d"},
-    }
+    expected = LegacyRunMetadata(
+        model="m",
+        git_hash="h",
+        test_set=3,
+        notes="old shape",
+        numeric_tolerance_mode="combined",
+        dataset_path="/data/v1",
+        created_at=datetime.fromisoformat("2026-08-26T00:00:00"),
+    )
 
     # Act
     actual = RunDirectory(run_path).read_metadata()
 
     # Assert
-    assert isinstance(actual, RunMetadata)
-    assert actual.solve_configuration.model_dump() == expected
+    assert actual == expected
     assert json.loads((run_path / "run.json").read_text()) == document
 
 
@@ -405,9 +369,18 @@ def test_read_metadata_decodes_released_legacy_document(temp_dir: Path) -> None:
 @pytest.mark.parametrize(
     "document",
     [
-        {"schema_version": 1, "model": "m", "git_hash": "h", "solve_configuration": {}},
-        {"schema_version": 2, "git_hash": "h", "solve_configuration": SOLVE_CONFIGURATION},
-        {"schema_version": 2, "model": "m", "git_hash": "h", "solve_configuration": []},
+        {"schema_version": 3, "git_hash": "h", "solve_configuration": SOLVE_CONFIGURATION},
+        {"schema_version": 3, "model": "m", "git_hash": "h", "solve_configuration": []},
+        {
+            "schema_version": 3,
+            "model": "m",
+            "git_hash": "h",
+            "solve_configuration": {
+                "models": {"d": {"transport": "anthropic", "model": "m", "apiKeyEnv": "K"}},
+                "modelRoles": {"default": "d"},
+            },
+        },
+        {"schema_version": 2, "git_hash": "h", "solve_configuration": {}},
         {key: value for key, value in RELEASED_RUN_JSON.items() if key != "model"},
         {**RELEASED_RUN_JSON, "model": None},
         {**RELEASED_RUN_JSON, "model": 7},
@@ -415,9 +388,10 @@ def test_read_metadata_decodes_released_legacy_document(temp_dir: Path) -> None:
         "not-an-object",
     ],
     ids=[
-        "wrong-schema-version",
         "missing-model-canonical",
         "configuration-not-an-object",
+        "old-model-shape-under-schema-3",
+        "missing-model-schema-2",
         "missing-model-legacy",
         "null-model-legacy",
         "wrong-type-model-legacy",
@@ -515,7 +489,7 @@ def test_migrating_released_metadata_preserves_history(temp_dir: Path) -> None:
 
     # Assert
     assert json.loads((run_path / "run.json").read_text()) == {
-        "schema_version": 2,
+        "schema_version": 3,
         "model": "claude-sonnet-4-5",
         "git_hash": "released-sha",
         "solve_configuration": SOLVE_CONFIGURATION,

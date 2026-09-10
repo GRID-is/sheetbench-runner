@@ -240,10 +240,11 @@ Two standard profiles are checked in:
 | `profiles/anthropic-profile.json` | `anthropic` | `claude-sonnet-5`, adaptive thinking | `ANTHROPIC_API_KEY` |
 | `profiles/openai-profile.json` | `openai-responses` | `gpt-5.2`, medium reasoning effort | `OPENAI_API_KEY` |
 
-A run directory whose `run.json` records models as `{model, options}` (runs
-created before profiles carried request bodies) is read as if each model had
-`request: {model, <max output tokens field>}`; the file is rewritten only
-when the runner writes metadata for another reason.
+`run.json` documents with a `schema_version` below 3 (runs created before
+profiles carried request bodies, and released-format runs) are read as
+released metadata: regrading needs no profile, and resuming requires a
+profile whose default model matches the recorded one, after which `run.json`
+is rewritten with that profile's configuration.
 
 For every non-reevaluation invocation, the runner creates one ephemeral solve
 context before running tasks, uses it for all workbook uploads and solves, and
