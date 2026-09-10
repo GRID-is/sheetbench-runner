@@ -2,8 +2,15 @@
   "models": {
     "default": {
       "transport": "anthropic",
-      "model": "claude-sonnet-5",
-      "apiKeyEnv": "ANTHROPIC_API_KEY"
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "request": {
+        "model": "claude-sonnet-5",
+        "max_tokens": 16000,
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        }
+      }
     }
   },
   "modelRoles": {

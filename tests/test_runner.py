@@ -28,17 +28,16 @@ PROFILE: dict[str, Any] = {
     "models": {
         "primary": {
             "transport": "openai-compatible",
-            "model": "opaque-model",
             "apiKeyEnv": "OPAQUE_ENV",
+            "request": {"model": "opaque-model"},
         }
     },
     "modelRoles": {"default": "primary"},
 }
 PROFILE_MODEL: dict[str, object] = {
     "transport": "openai-compatible",
-    "model": "opaque-model",
     "apiKeyEnv": "OPAQUE_ENV",
-    "options": None,
+    "request": {"model": "opaque-model"},
 }
 PROFILE_CONFIGURATION = {
     "models": {"primary": PROFILE_MODEL},
@@ -54,7 +53,7 @@ def write_profile(path: Path) -> Path:
 
 def canonical_run_json(**overrides: Any) -> str:
     document: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "model": "opaque-model",
         "git_hash": "old",
         "solve_configuration": PROFILE_CONFIGURATION,
@@ -131,7 +130,7 @@ async def test_run_creates_and_deletes_exactly_once_and_stores_profile_metadata(
     assert status_route.call_count == 1
     assert "X-Solve-Context" not in status_route.calls[0].request.headers
     run_data = json.loads((run_dir / "run.json").read_text())
-    assert run_data["schema_version"] == 2
+    assert run_data["schema_version"] == 3
     assert run_data["model"] == "opaque-model"
     assert run_data["solve_configuration"] == PROFILE_CONFIGURATION
     assert run_data["numeric_tolerance_mode"] == "combined"
@@ -384,7 +383,7 @@ async def test_released_run_is_migrated_to_canonical_metadata_after_context_crea
     assert delete_route.call_count == 1
     assert status_route.call_count == 0
     assert json.loads((run_dir / "run.json").read_text()) == {
-        "schema_version": 2,
+        "schema_version": 3,
         "model": "opaque-model",
         "git_hash": "released-sha",
         "solve_configuration": PROFILE_CONFIGURATION,
@@ -393,6 +392,71 @@ async def test_released_run_is_migrated_to_canonical_metadata_after_context_crea
         "numeric_tolerance_mode": "relative",
         "dataset_path": None,
         "created_at": "2026-01-02T03:04:05",
+    }
+
+
+@respx.mock
+async def test_schema_2_run_is_resumed_with_the_profile_configuration(
+    tmp_path: Path,
+    sample_dataset_dir: Path,
+    sample_task: Task,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange
+    monkeypatch.setenv("OPAQUE_ENV", "key")
+    monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=RunStats(total_tasks=1)))
+    create_route, status_route, delete_route = context_routes()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "model": "opaque-model",
+                "git_hash": "old",
+                "solve_configuration": {
+                    "models": {
+                        "primary": {
+                            "transport": "openai-compatible",
+                            "model": "opaque-model",
+                            "apiKeyEnv": "OPAQUE_ENV",
+                            "options": None,
+                        }
+                    },
+                    "modelRoles": {"default": "primary"},
+                },
+                "test_set": None,
+                "notes": "schema 2",
+                "dataset_path": str(sample_dataset_dir.resolve()),
+                "created_at": "2026-08-26T00:00:00",
+            }
+        )
+    )
+    (run_dir / "results.json").write_text("[]")
+
+    # Act
+    await run(
+        dataset_path=sample_dataset_dir,
+        run_dir_path=run_dir,
+        solve_server_url="http://localhost:3000",
+        solve_profile_path=write_profile(tmp_path / "profile.json"),
+        tasks=[sample_task],
+    )
+
+    # Assert
+    assert create_route.call_count == 1
+    assert delete_route.call_count == 1
+    assert status_route.call_count == 0
+    assert json.loads((run_dir / "run.json").read_text()) == {
+        "schema_version": 3,
+        "model": "opaque-model",
+        "git_hash": "old",
+        "solve_configuration": PROFILE_CONFIGURATION,
+        "test_set": None,
+        "notes": "schema 2",
+        "numeric_tolerance_mode": "relative",
+        "dataset_path": str(sample_dataset_dir.resolve()),
+        "created_at": "2026-08-26T00:00:00",
     }
 
 
@@ -469,7 +533,7 @@ async def test_real_legacy_run_without_infuser_config_is_migrated(
     assert delete_route.call_count == 1
     assert status_route.call_count == 0
     migrated = json.loads((run_dir / "run.json").read_text())
-    assert migrated["schema_version"] == 2
+    assert migrated["schema_version"] == 3
     assert migrated["model"] == "opaque-model"
     assert migrated["git_hash"] == "abc0001"
     assert migrated["solve_configuration"] == PROFILE_CONFIGURATION
