@@ -19,9 +19,8 @@ SOLVE_CONFIGURATION: dict[str, Any] = {
     "models": {
         "default": {
             "transport": "anthropic",
-            "model": "claude-sonnet-5",
             "apiKeyEnv": "ANTHROPIC_API_KEY",
-            "options": None,
+            "request": {"model": "claude-sonnet-5", "max_tokens": 16000},
         }
     },
     "modelRoles": {"default": "default"},
@@ -307,6 +306,81 @@ def test_read_metadata_decodes_canonical_document(temp_dir: Path) -> None:
 
     # Assert
     assert actual == metadata
+
+
+@pytest.mark.parametrize(
+    ("recorded_model", "migrated_request"),
+    [
+        (
+            {"transport": "anthropic", "model": "m", "apiKeyEnv": "K", "options": None},
+            {"model": "m"},
+        ),
+        (
+            {"transport": "anthropic", "model": "m", "apiKeyEnv": "K"},
+            {"model": "m"},
+        ),
+        (
+            {
+                "transport": "anthropic",
+                "model": "m",
+                "apiKeyEnv": "K",
+                "options": {"maxOutputTokens": 7},
+            },
+            {"model": "m", "max_tokens": 7},
+        ),
+        (
+            {
+                "transport": "openai-responses",
+                "model": "m",
+                "apiKeyEnv": "K",
+                "options": {"maxOutputTokens": 7},
+            },
+            {"model": "m", "max_output_tokens": 7},
+        ),
+        (
+            {
+                "transport": "openai-compatible",
+                "model": "m",
+                "apiKeyEnv": "K",
+                "options": {"maxOutputTokens": 7},
+            },
+            {"model": "m", "max_completion_tokens": 7},
+        ),
+    ],
+    ids=["options-null", "options-absent", "anthropic", "responses", "compatible"],
+)
+def test_read_metadata_migrates_a_model_recorded_before_request_bodies(
+    temp_dir: Path, recorded_model: dict[str, Any], migrated_request: dict[str, Any]
+) -> None:
+    # Arrange
+    run_path = temp_dir / "old-run"
+    run_path.mkdir()
+    document = {
+        "schema_version": 2,
+        "model": "m",
+        "git_hash": "h",
+        "solve_configuration": {"models": {"d": recorded_model}, "modelRoles": {"default": "d"}},
+        "created_at": "2026-08-26T00:00:00",
+    }
+    (run_path / "run.json").write_text(json.dumps(document))
+    expected = {
+        "models": {
+            "d": {
+                "transport": recorded_model["transport"],
+                "apiKeyEnv": "K",
+                "request": migrated_request,
+            }
+        },
+        "modelRoles": {"default": "d"},
+    }
+
+    # Act
+    actual = RunDirectory(run_path).read_metadata()
+
+    # Assert
+    assert isinstance(actual, RunMetadata)
+    assert actual.solve_configuration.model_dump() == expected
+    assert json.loads((run_path / "run.json").read_text()) == document
 
 
 def test_read_metadata_decodes_released_legacy_document(temp_dir: Path) -> None:

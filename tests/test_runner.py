@@ -28,17 +28,16 @@ PROFILE: dict[str, Any] = {
     "models": {
         "primary": {
             "transport": "openai-compatible",
-            "model": "opaque-model",
             "apiKeyEnv": "OPAQUE_ENV",
+            "request": {"model": "opaque-model"},
         }
     },
     "modelRoles": {"default": "primary"},
 }
 PROFILE_MODEL: dict[str, object] = {
     "transport": "openai-compatible",
-    "model": "opaque-model",
     "apiKeyEnv": "OPAQUE_ENV",
-    "options": None,
+    "request": {"model": "opaque-model"},
 }
 PROFILE_CONFIGURATION = {
     "models": {"primary": PROFILE_MODEL},

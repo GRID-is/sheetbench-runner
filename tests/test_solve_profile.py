@@ -12,13 +12,13 @@ PROFILE: dict[str, Any] = {
     "models": {
         "primary": {
             "transport": "anthropic",
-            "model": "model-v9",
             "apiKeyEnv": "FIRST_KEY",
+            "request": {"model": "model-v9", "max_tokens": 4096, "thinking": {"type": "adaptive"}},
         },
         "reviewer": {
             "transport": "openai-responses",
-            "model": "review-model",
             "apiKeyEnv": "SECOND_KEY",
+            "request": {"model": "review-model", "reasoning": {"effort": "low"}},
         },
     },
     "modelRoles": {"default": "primary", "review": "reviewer"},
@@ -105,43 +105,44 @@ def test_rejects_invalid_profile_shapes(
 @pytest.mark.parametrize(
     ("models", "message"),
     [
-        ({"primary": {"model": "m", "apiKeyEnv": "KEY"}}, "transport"),
+        ({"primary": {"apiKeyEnv": "KEY", "request": {"model": "m"}}}, "transport"),
         (
-            {"primary": {"transport": "unknown", "model": "m", "apiKeyEnv": "KEY"}},
+            {"primary": {"transport": "unknown", "apiKeyEnv": "KEY", "request": {"model": "m"}}},
             "transport",
         ),
         (
             {
                 "primary": {
                     "transport": "anthropic",
-                    "model": "m",
                     "apiKeyEnv": "KEY",
+                    "request": {"model": "m"},
                     "extra": "x",
                 }
             },
             "extra",
         ),
+        ({"primary": {"transport": "anthropic", "model": "m", "apiKeyEnv": "KEY"}}, "model"),
         (
             {
                 "primary": {
                     "transport": "anthropic",
-                    "model": "m",
                     "apiKeyEnv": "KEY",
-                    "options": {"temperature": 1},
+                    "request": {"model": "m"},
+                    "options": {"maxOutputTokens": 1},
                 }
             },
-            "temperature",
+            "options",
+        ),
+        ({"primary": {"transport": "anthropic", "apiKeyEnv": "KEY"}}, "request"),
+        ({"primary": {"transport": "anthropic", "apiKeyEnv": "KEY", "request": "m"}}, "request"),
+        ({"primary": {"transport": "anthropic", "apiKeyEnv": "KEY", "request": {}}}, "model"),
+        (
+            {"primary": {"transport": "anthropic", "apiKeyEnv": "KEY", "request": {"model": ""}}},
+            "model",
         ),
         (
-            {
-                "primary": {
-                    "transport": "anthropic",
-                    "model": "m",
-                    "apiKeyEnv": "KEY",
-                    "options": {"maxOutputTokens": True},
-                }
-            },
-            "maxOutputTokens",
+            {"primary": {"transport": "anthropic", "apiKeyEnv": "KEY", "request": {"model": 1}}},
+            "model",
         ),
     ],
 )
@@ -187,19 +188,39 @@ def test_loading_a_profile_does_not_resolve_api_keys(
 
 
 @pytest.mark.parametrize(
-    ("filename", "transport", "model", "api_key_env"),
+    ("filename", "transport", "request_body", "api_key_env"),
     [
-        ("anthropic-profile.json", "anthropic", "claude-sonnet-5", "ANTHROPIC_API_KEY"),
-        ("openai-profile.json", "openai-responses", "gpt-5.2", "OPENAI_API_KEY"),
+        (
+            "anthropic-profile.json",
+            "anthropic",
+            {
+                "model": "claude-sonnet-5",
+                "max_tokens": 16000,
+                "thinking": {"type": "adaptive", "display": "summarized"},
+            },
+            "ANTHROPIC_API_KEY",
+        ),
+        (
+            "openai-profile.json",
+            "openai-responses",
+            {
+                "model": "gpt-5.2",
+                "max_output_tokens": 16000,
+                "reasoning": {"effort": "medium", "summary": "auto"},
+            },
+            "OPENAI_API_KEY",
+        ),
     ],
 )
 def test_standard_profile_is_valid(
-    filename: str, transport: str, model: str, api_key_env: str
+    filename: str, transport: str, request_body: dict[str, object], api_key_env: str
 ) -> None:
     # Arrange
     path = Path(__file__).parent.parent / "profiles" / filename
     expected_configuration = {
-        "models": {"default": {"transport": transport, "model": model, "apiKeyEnv": api_key_env}},
+        "models": {
+            "default": {"transport": transport, "apiKeyEnv": api_key_env, "request": request_body}
+        },
         "modelRoles": {"default": "default"},
     }
 
@@ -208,4 +229,4 @@ def test_standard_profile_is_valid(
 
     # Assert
     assert profile.configuration.model_dump(exclude_none=True) == expected_configuration
-    assert profile.default_model == model
+    assert profile.default_model == request_body["model"]

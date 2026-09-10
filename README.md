@@ -218,17 +218,32 @@ numeric_tolerance_mode = "relative"
 CLI options (`--solve-server-url`, `--solve-profile`, `--concurrency`, `--timeout`,
 `--numeric-tolerance-mode`) override their config file equivalents.
 
-The solve profile is JSON containing `models` and `modelRoles`. Each model's `apiKeyEnv` names the environment variable that holds
-its API key. Models may share an environment variable or name different
-variables. The runner reads those variables and sends each key with the context
-request as that model's `apiKey`.
+The solve profile is JSON containing `models` and `modelRoles`. Each model
+names a `transport`, an `apiKeyEnv` and a `request`. `request` is the
+provider's own request body for that transport (Anthropic Messages, OpenAI
+Responses or OpenAI Chat Completions), without the messages, system prompt,
+tools and streaming fields the solve server sets on every turn. `model` is
+required in every `request`. The runner sends the body to the solve server
+unchanged; the server validates it against the provider with one short
+generation per model before the run starts, so a rejected parameter or key
+fails the run before the first task.
+
+`apiKeyEnv` names the environment variable that holds the model's API key.
+Models may share an environment variable or name different variables. The
+runner reads those variables and sends each key with the context request as
+that model's `apiKey`.
 
 Two standard profiles are checked in:
 
 | Profile | Transport | Model | Environment variable |
 | --- | --- | --- | --- |
-| `profiles/anthropic-profile.json` | `anthropic` | `claude-sonnet-5` | `ANTHROPIC_API_KEY` |
-| `profiles/openai-profile.json` | `openai-responses` | `gpt-5.2` | `OPENAI_API_KEY` |
+| `profiles/anthropic-profile.json` | `anthropic` | `claude-sonnet-5`, adaptive thinking | `ANTHROPIC_API_KEY` |
+| `profiles/openai-profile.json` | `openai-responses` | `gpt-5.2`, medium reasoning effort | `OPENAI_API_KEY` |
+
+A run directory whose `run.json` records models as `{model, options}` (runs
+created before profiles carried request bodies) is read as if each model had
+`request: {model, <max output tokens field>}`; the file is rewritten only
+when the runner writes metadata for another reason.
 
 For every non-reevaluation invocation, the runner creates one ephemeral solve
 context before running tasks, uses it for all workbook uploads and solves, and

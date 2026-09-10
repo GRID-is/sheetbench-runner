@@ -16,6 +16,36 @@ class RunMetadataError(ValueError):
     """run.json could not be decoded as a supported format."""
 
 
+_MAX_OUTPUT_TOKENS_FIELD = {
+    "anthropic": "max_tokens",
+    "openai-responses": "max_output_tokens",
+    "openai-compatible": "max_completion_tokens",
+}
+
+
+def _with_request_bodies(solve_configuration: object) -> object:
+    """Rewrite models recorded as `{model, options}` before profiles carried request bodies."""
+    if not isinstance(solve_configuration, dict) or not isinstance(
+        solve_configuration.get("models"), dict
+    ):
+        return solve_configuration
+    models: dict[str, object] = {}
+    for name, recorded in solve_configuration["models"].items():
+        if not isinstance(recorded, dict) or "model" not in recorded:
+            models[name] = recorded
+            continue
+        options = recorded.get("options") or {}
+        request: dict[str, object] = {"model": recorded["model"]}
+        field = _MAX_OUTPUT_TOKENS_FIELD.get(str(recorded.get("transport")))
+        if field and isinstance(options, dict) and "maxOutputTokens" in options:
+            request[field] = options["maxOutputTokens"]
+        migrated = {
+            key: value for key, value in recorded.items() if key not in ("model", "options")
+        }
+        models[name] = {**migrated, "request": request}
+    return {**solve_configuration, "models": models}
+
+
 class LegacyRunMetadata(BaseModel):
     """A released-format run.json awaiting migration to the canonical schema."""
 
@@ -167,7 +197,12 @@ class RunDirectory:
 
         if "solve_configuration" in data:
             try:
-                return RunMetadata.model_validate(data)
+                return RunMetadata.model_validate(
+                    {
+                        **data,
+                        "solve_configuration": _with_request_bodies(data["solve_configuration"]),
+                    }
+                )
             except ValidationError as e:
                 raise RunMetadataError(
                     f"{self.run_json_path} is not valid canonical metadata"
