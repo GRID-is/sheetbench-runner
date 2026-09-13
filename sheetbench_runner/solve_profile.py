@@ -4,14 +4,14 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal, Mapping, Self
+from typing import Annotated, Any, Literal, Mapping, Self
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    StrictInt,
     ValidationError,
+    field_validator,
     model_validator,
 )
 
@@ -20,23 +20,27 @@ class SolveProfileError(ValueError):
     """A solve profile or its API-key environment is invalid."""
 
 
-class ModelOptions(BaseModel):
-    """Generation options for one configured model."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    maxOutputTokens: StrictInt | None = None
-
-
 class ProfileModel(BaseModel):
-    """A configured model and the environment variable holding its API key."""
+    """A provider request body, its transport, and the environment variable holding its API key."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     transport: Literal["anthropic", "openai-responses", "openai-compatible"]
-    model: str
     apiKeyEnv: str
-    options: ModelOptions | None = None
+    request: Mapping[str, Any]
+
+    @field_validator("request")
+    @classmethod
+    def _request_names_a_model(cls, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        model = request.get("model")
+        if not isinstance(model, str) or not model:
+            raise ValueError("request.model must be a non-empty string")
+        return request
+
+    @property
+    def model(self) -> str:
+        model: str = self.request["model"]
+        return model
 
 
 class SolveConfiguration(BaseModel):

@@ -165,7 +165,7 @@ class RunDirectory:
         if not isinstance(data, dict):
             raise RunMetadataError(f"{self.run_json_path} is not a JSON object")
 
-        if "solve_configuration" in data:
+        if data.get("schema_version") == 3:
             try:
                 return RunMetadata.model_validate(data)
             except ValidationError as e:

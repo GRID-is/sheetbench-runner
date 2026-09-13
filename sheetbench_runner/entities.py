@@ -158,7 +158,7 @@ class RunMetadata(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     model: Annotated[str, Field(min_length=1)]
     git_hash: str
     solve_configuration: SolveConfiguration

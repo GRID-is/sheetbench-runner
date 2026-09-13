@@ -19,8 +19,8 @@ from sheetbench_runner.solve_profile import SolveConfiguration
 
 PRIMARY_MODEL: dict[str, object] = {
     "transport": "openai-compatible",
-    "model": "opaque-model",
     "apiKeyEnv": "OPENAI_API_KEY",
+    "request": {"model": "opaque-model", "max_completion_tokens": 123},
 }
 SOLVE_PROFILE = SolveConfiguration.model_validate(
     {
@@ -29,7 +29,10 @@ SOLVE_PROFILE = SolveConfiguration.model_validate(
     }
 )
 CONTEXT_TOKEN = "solve-context-token"
-PAYLOAD_MODEL = {"transport": "openai-compatible", "model": "opaque-model"}
+PAYLOAD_MODEL = {
+    "transport": "openai-compatible",
+    "request": {"model": "opaque-model", "max_completion_tokens": 123},
+}
 
 
 def context_response(*, token: object = CONTEXT_TOKEN) -> dict[str, object]:
@@ -113,19 +116,18 @@ async def test_context_request_repeats_shared_keys_and_supports_different_keys()
             "models": {
                 "primary": {
                     "transport": "anthropic",
-                    "model": "model-a",
                     "apiKeyEnv": "SHARED_KEY",
+                    "request": {"model": "model-a", "max_tokens": 1},
                 },
                 "reviewer": {
                     "transport": "openai-responses",
-                    "model": "model-b",
                     "apiKeyEnv": "SHARED_KEY",
+                    "request": {"model": "model-b"},
                 },
                 "judge": {
                     "transport": "openai-compatible",
-                    "model": "model-c",
                     "apiKeyEnv": "OTHER_KEY",
-                    "options": {"maxOutputTokens": 123},
+                    "request": {"model": "model-c", "temperature": 0, "seed": None},
                 },
             },
             "modelRoles": {"default": "primary", "review": "reviewer", "judge": "judge"},
@@ -143,16 +145,19 @@ async def test_context_request_repeats_shared_keys_and_supports_different_keys()
 
     assert json.loads(route.calls[0].request.content) == {
         "models": {
-            "primary": {"transport": "anthropic", "model": "model-a", "apiKey": "shared-key"},
+            "primary": {
+                "transport": "anthropic",
+                "request": {"model": "model-a", "max_tokens": 1},
+                "apiKey": "shared-key",
+            },
             "reviewer": {
                 "transport": "openai-responses",
-                "model": "model-b",
+                "request": {"model": "model-b"},
                 "apiKey": "shared-key",
             },
             "judge": {
                 "transport": "openai-compatible",
-                "model": "model-c",
-                "options": {"maxOutputTokens": 123},
+                "request": {"model": "model-c", "temperature": 0, "seed": None},
                 "apiKey": "other-key",
             },
         },
