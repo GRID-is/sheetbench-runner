@@ -194,8 +194,8 @@ def test_loading_a_profile_does_not_resolve_api_keys(
             "anthropic-profile.json",
             "anthropic",
             {
-                "model": "claude-sonnet-5",
-                "max_tokens": 16000,
+                "model": "claude-opus-5",
+                "output_config": {"effort": "low"},
                 "thinking": {"type": "adaptive", "display": "summarized"},
             },
             "ANTHROPIC_API_KEY",
