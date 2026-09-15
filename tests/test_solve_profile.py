@@ -195,6 +195,7 @@ def test_loading_a_profile_does_not_resolve_api_keys(
             "anthropic",
             {
                 "model": "claude-opus-5",
+                "max_tokens": 64000,
                 "output_config": {"effort": "low"},
                 "thinking": {"type": "adaptive", "display": "summarized"},
             },

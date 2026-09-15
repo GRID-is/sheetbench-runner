@@ -5,6 +5,7 @@
       "apiKeyEnv": "ANTHROPIC_API_KEY",
       "request": {
         "model": "claude-opus-5",
+        "max_tokens": 64000,
         "output_config": { "effort": "low" },
         "thinking": {
           "type": "adaptive",
