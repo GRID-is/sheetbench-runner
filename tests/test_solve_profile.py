@@ -188,6 +188,76 @@ def test_loading_a_profile_does_not_resolve_api_keys(
 
 
 @pytest.mark.parametrize(
+    "url",
+    [
+        "https://inference.example.com/v1",
+        "http://localhost:8000/v1",
+        "http://[::1]:8000/v1/",
+        "https://host/team@grid/v1",
+    ],
+)
+def test_compatible_base_url_is_preserved(tmp_path: Path, url: str) -> None:
+    model = {
+        "transport": "openai-compatible",
+        "apiKeyEnv": "KEY",
+        "baseUrl": url,
+        "request": {"model": "m"},
+    }
+    raw = {"models": {"primary": model}, "modelRoles": {"default": "primary"}}
+    profile = load_solve_profile(write_profile(tmp_path / "profile.json", raw))
+    assert profile.configuration.model_dump() == raw
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        None,
+        123,
+        "",
+        "/v1",
+        "ftp://host/v1",
+        "https:///v1",
+        "https://",
+        "https://user:password@host/v1",
+        "https://host/v1?key=secret",
+        "https://host/v1#fragment",
+        "https://host/v1?",
+        "https://host/v1#",
+        " https://host/v1",
+        "https://host/ v1",
+        "https://host\\other/v1",
+        "https://host:99999/v1",
+        "https://[broken/v1",
+        "https://host/v1\u007f",
+        "https://host/" + "a" * 2048,
+    ],
+)
+def test_rejects_invalid_base_url(tmp_path: Path, url: object) -> None:
+    model = {
+        "transport": "openai-compatible",
+        "apiKeyEnv": "KEY",
+        "baseUrl": url,
+        "request": {"model": "m"},
+    }
+    raw = {"models": {"primary": model}, "modelRoles": {"default": "primary"}}
+    with pytest.raises(SolveProfileError, match="baseUrl"):
+        load_solve_profile(write_profile(tmp_path / "profile.json", raw))
+
+
+@pytest.mark.parametrize("transport", ["anthropic", "openai-responses"])
+def test_rejects_base_url_for_native_transports(tmp_path: Path, transport: str) -> None:
+    model = {
+        "transport": transport,
+        "apiKeyEnv": "KEY",
+        "baseUrl": "https://proxy.example/v1",
+        "request": {"model": "m", "max_tokens": 100},
+    }
+    raw = {"models": {"primary": model}, "modelRoles": {"default": "primary"}}
+    with pytest.raises(SolveProfileError, match="baseUrl"):
+        load_solve_profile(write_profile(tmp_path / "profile.json", raw))
+
+
+@pytest.mark.parametrize(
     ("filename", "transport", "request_body", "api_key_env"),
     [
         (
@@ -231,3 +301,23 @@ def test_standard_profile_is_valid(
     # Assert
     assert profile.configuration.model_dump(exclude_none=True) == expected_configuration
     assert profile.default_model == request_body["model"]
+
+
+def test_qwen_profile_uses_thinking_without_effort_overrides() -> None:
+    path = Path(__file__).parent.parent / "profiles" / "qwen-compatible-profile.json"
+    profile = load_solve_profile(path)
+    assert profile.configuration.model_dump() == {
+        "models": {
+            "default": {
+                "transport": "openai-compatible",
+                "apiKeyEnv": "COMPATIBLE_API_KEY",
+                "baseUrl": "https://inference.example.com/v1",
+                "request": {
+                    "model": "qwen3.8-27b",
+                    "max_tokens": 16000,
+                    "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
+                },
+            }
+        },
+        "modelRoles": {"default": "default"},
+    }

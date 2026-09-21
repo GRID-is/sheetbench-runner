@@ -176,6 +176,31 @@ async def test_upload_and_solve_require_a_context(tmp_path: Path) -> None:
             await client.solve("wb-123", "Test prompt")
 
 
+@respx.mock
+async def test_context_preserves_each_models_base_url() -> None:
+    urls = {"primary": "https://inference.example.com/v1", "reviewer": "http://localhost:8000/v1"}
+    profile = SolveConfiguration.model_validate(
+        {
+            "models": {name: {**PRIMARY_MODEL, "baseUrl": url} for name, url in urls.items()},
+            "modelRoles": {"default": "primary", "review": "reviewer"},
+        }
+    )
+    route = respx.post("http://localhost:3000/solve-contexts").mock(
+        return_value=httpx.Response(201, json=context_response())
+    )
+
+    async with SolveClient("http://localhost:3000") as client:
+        await client.create_solve_context(
+            profile, {"primary": "first-key", "reviewer": "second-key"}
+        )
+
+    payload = json.loads(route.calls[0].request.content)
+    for name, url in urls.items():
+        assert payload["models"][name]["baseUrl"] == url
+        assert payload["models"][name]["request"] == PRIMARY_MODEL["request"]
+        assert "apiKeyEnv" not in payload["models"][name]
+
+
 @pytest.mark.parametrize("body", [{}, {"id": 3}], ids=["missing-id", "non-string-id"])
 @respx.mock
 async def test_upload_rejects_malformed_success_response(tmp_path: Path, body: object) -> None:

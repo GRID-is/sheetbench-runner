@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Mapping, Self
 
 from pydantic import (
+    AnyHttpUrl,
     BaseModel,
     ConfigDict,
     Field,
@@ -27,7 +28,37 @@ class ProfileModel(BaseModel):
 
     transport: Literal["anthropic", "openai-responses", "openai-compatible"]
     apiKeyEnv: str
+    baseUrl: str | None = Field(default=None, exclude_if=lambda value: value is None)
     request: Mapping[str, Any]
+
+    @field_validator("baseUrl", mode="before")
+    @classmethod
+    def _valid_base_url(cls, value: object) -> str:
+        if (
+            not isinstance(value, str)
+            or not value
+            or len(value) > 2048
+            or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value)
+            or any(char in value for char in "\\?#")
+            or not value.lower().startswith(("http://", "https://"))
+        ):
+            raise ValueError(
+                "baseUrl must be an absolute HTTP(S) URL without credentials, query or fragment"
+            )
+        authority = value.split("://", 1)[1].split("/", 1)[0]
+        if not authority or "@" in authority:
+            raise ValueError("baseUrl must have a host and no credentials")
+        try:
+            AnyHttpUrl(value)
+        except ValueError as error:
+            raise ValueError("baseUrl must be a valid HTTP(S) URL") from error
+        return value
+
+    @model_validator(mode="after")
+    def _base_url_requires_compatible_transport(self) -> Self:
+        if self.baseUrl is not None and self.transport != "openai-compatible":
+            raise ValueError("baseUrl is only supported for openai-compatible")
+        return self
 
     @field_validator("request")
     @classmethod

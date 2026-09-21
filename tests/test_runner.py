@@ -315,8 +315,14 @@ async def test_reevaluate_rejects_partial_numeric_tolerance_mode_switch(
                 "modelRoles": {"default": "primary", "review": "primary"},
             }
         },
+        {
+            "solve_configuration": {
+                **PROFILE_CONFIGURATION,
+                "models": {"primary": {**PROFILE_MODEL, "baseUrl": "https://different.example/v1"}},
+            }
+        },
     ],
-    ids=["model", "configuration"],
+    ids=["model", "configuration", "endpoint"],
 )
 @respx.mock
 async def test_mismatched_resume_aborts_before_any_server_request(
