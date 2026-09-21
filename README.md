@@ -257,9 +257,47 @@ Standard profiles are checked in:
 | `profiles/qwen-compatible-profile.json` | `openai-compatible` | `qwen3.8-27b`, thinking enabled | `COMPATIBLE_API_KEY` |
 
 The Qwen profile uses a placeholder endpoint; replace it with your API root.
-It enables thinking through `extra_body.chat_template_kwargs` without a
-reasoning-effort override. This endpoint configuration does not add
-structured-thinking support to the compatible adapter.
+It enables thinking but leaves effort at the endpoint's default. To request
+both thinking and an explicit effort level on a LiteLLM-backed Qwen endpoint,
+set the model's `request` to:
+
+```json
+{
+  "model": "qwen3.8-27b",
+  "max_tokens": 16000,
+  "reasoning_effort": "medium",
+  "allowed_openai_params": ["reasoning_effort"],
+  "extra_body": {
+    "chat_template_kwargs": {
+      "enable_thinking": true
+    }
+  }
+}
+```
+
+- **Thinking:** `enable_thinking` enables the model's thinking mode.
+- **Effort:** `reasoning_effort` selects the effort level. The tested Qwen
+  deployment accepts `low`, `medium`, and `xhigh` (its default); it rejects
+  `high`. Confirm the supported values with your endpoint operator rather
+  than assuming they are the same across models or deployments.
+- **Proxy forwarding:** `allowed_openai_params` is a LiteLLM-specific override
+  that permits forwarding `reasoning_effort` when its parameter validation
+  would otherwise reject it. It does not enable thinking by itself or add
+  effort support to a model that lacks it. Other endpoints may not need or
+  accept this field.
+- **Thinking visibility:** enabling thinking and setting effort do not guarantee
+  a separate reasoning channel. In the tested deployment, both work while
+  reasoning and the answer arrive together in ordinary `content`. The current
+  compatible adapter does not translate separate reasoning fields into thinking
+  blocks. Inspect a saved transcript before relying on structured thinking.
+
+These fields belong inside the profile model's `request`, not beside `baseUrl`.
+The nested `extra_body` above is part of the forwarded JSON body; do not assume
+it has the same semantics as an SDK's `extra_body` keyword argument. This
+example was exercised with both non-streaming and streaming requests. Effort
+is not a fixed token budget, and a higher setting need not produce a longer
+response to every prompt. Changing effort changes the saved solve configuration;
+use a new run directory rather than resuming a run with different settings.
 
 `run.json` documents with a `schema_version` below 3 (runs created before
 profiles carried request bodies, and released-format runs) are read as
