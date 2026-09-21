@@ -1,0 +1,21 @@
+{
+  "models": {
+    "default": {
+      "transport": "openai-compatible",
+      "apiKeyEnv": "COMPATIBLE_API_KEY",
+      "baseUrl": "https://inference.example.com/v1",
+      "request": {
+        "model": "qwen3.8-27b",
+        "max_tokens": 16000,
+        "extra_body": {
+          "chat_template_kwargs": {
+            "enable_thinking": true
+          }
+        }
+      }
+    }
+  },
+  "modelRoles": {
+    "default": "default"
+  }
+}

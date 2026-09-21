@@ -14,6 +14,7 @@ from sheetbench_runner.run_directory import (
     RunMetadataError,
 )
 from sheetbench_runner.runner import check_dataset_binding
+from sheetbench_runner.solve_profile import SolveConfiguration
 
 SOLVE_CONFIGURATION: dict[str, Any] = {
     "models": {
@@ -73,6 +74,31 @@ def test_create_new_run_directory(temp_dir: Path):
         "dataset_path": None,
         "created_at": metadata.created_at.isoformat(),
     }
+
+
+def test_base_url_survives_metadata_round_trip(temp_dir: Path) -> None:
+    configuration = {
+        "models": {
+            "default": {
+                "transport": "openai-compatible",
+                "apiKeyEnv": "COMPATIBLE_API_KEY",
+                "baseUrl": "https://inference.example.com/v1",
+                "request": {"model": "qwen3.8-27b"},
+            }
+        },
+        "modelRoles": {"default": "default"},
+    }
+    metadata = RunMetadata(
+        model="qwen3.8-27b",
+        git_hash="test",
+        solve_configuration=SolveConfiguration.model_validate(configuration),
+    )
+    directory = RunDirectory(temp_dir / "endpoint-run")
+    directory.create(metadata)
+    loaded = directory.read_metadata()
+    assert isinstance(loaded, RunMetadata)
+    assert loaded.solve_configuration.model_dump() == configuration
+    assert json.loads(directory.run_json_path.read_text())["solve_configuration"] == configuration
 
 
 def test_load_existing_results(temp_dir: Path):

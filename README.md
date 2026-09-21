@@ -233,12 +233,33 @@ Models may share an environment variable or name different variables. The
 runner reads those variables and sends each key with the context request as
 that model's `apiKey`.
 
-Two standard profiles are checked in:
+For `openai-compatible`, an optional `baseUrl` beside `transport`, `apiKeyEnv`
+and `request` selects the model's API root (for example,
+`https://inference.example.com/v1`). Do not include `/chat/completions`.
+The runner sends it through the solve context; no solve-server environment
+variable is needed. Different models may use different endpoints. When omitted,
+the solve server uses `https://api.openai.com/v1`. Native `anthropic` and
+`openai-responses` transports do not accept `baseUrl`.
+
+The URL must be absolute HTTP(S), at most 2048 characters, without credentials,
+query parameters, fragments, whitespace or backslashes. It is recorded in
+`run.json` and compared on resume, so do not put secrets in the URL (including
+its path). Local/private endpoints are supported: use a trusted solve server,
+since it makes requests to the configured URL and sends that model's key there.
+The URL is resolved from the server's network, not the runner's.
+
+Standard profiles are checked in:
 
 | Profile | Transport | Model | Environment variable |
 | --- | --- | --- | --- |
 | `profiles/anthropic-profile.json` | `anthropic` | `claude-sonnet-5`, adaptive thinking | `ANTHROPIC_API_KEY` |
 | `profiles/openai-profile.json` | `openai-responses` | `gpt-5.2`, medium reasoning effort | `OPENAI_API_KEY` |
+| `profiles/qwen-compatible-profile.json` | `openai-compatible` | `qwen3.8-27b`, thinking enabled | `COMPATIBLE_API_KEY` |
+
+The Qwen profile uses a placeholder endpoint; replace it with your API root.
+It enables thinking through `extra_body.chat_template_kwargs` without a
+reasoning-effort override. This endpoint configuration does not add
+structured-thinking support to the compatible adapter.
 
 `run.json` documents with a `schema_version` below 3 (runs created before
 profiles carried request bodies, and released-format runs) are read as
