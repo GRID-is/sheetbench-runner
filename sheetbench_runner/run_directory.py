@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .config import NumericToleranceMode
 from .entities import RunMetadata, TaskResult, TaskStatus
+from .findings import TaskFindings
 from .solve_profile import SolveConfiguration
 
 
@@ -128,6 +129,24 @@ class RunDirectory:
         """Get the task ids represented in results.json."""
         return set(self._results)
 
+    def findings_filename(self, task_id: str) -> str:
+        """The per-task findings artifact, named like the other per-task artifacts."""
+        return f"{task_id}-findings.json"
+
+    def write_findings(self, findings: TaskFindings) -> str:
+        """Write a task's grading findings and return the name results.json refers to."""
+        name = self.findings_filename(findings.task_id)
+        self.path.mkdir(parents=True, exist_ok=True)
+        (self.path / name).write_text(json.dumps(findings.model_dump(mode="json"), indent=2) + "\n")
+        return name
+
+    def read_findings(self, task_id: str) -> TaskFindings | None:
+        """Decode a task's findings artifact, or None when the run recorded none."""
+        path = self.path / self.findings_filename(task_id)
+        if not path.exists():
+            return None
+        return TaskFindings.model_validate_json(path.read_text())
+
     def record_result(self, result: TaskResult) -> None:
         """
         Record a task result to results.json.
@@ -139,12 +158,14 @@ class RunDirectory:
             # Don't record transient failures - they should be retried
             return
 
+        if result.findings is not None:
+            result.findings_file = self.write_findings(result.findings)
         result_dict = result.to_results_dict()
         self._results[result.task_id] = result_dict
         self._completed_task_ids.add(result.task_id)
-        self._save_results()
+        self.save_results()
 
-    def _save_results(self) -> None:
+    def save_results(self) -> None:
         """Save results to disk, sorted by task_id for consistency."""
         results_list = sorted(self._results.values(), key=lambda x: x["task_id"])
         with open(self.results_path, "w") as f:
