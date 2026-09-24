@@ -8,7 +8,7 @@ import asyncclick as click
 
 from .config import Config, NumericToleranceMode
 from .dataset import Dataset
-from .runner import run
+from .runner import RunStats, run
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,17 @@ def setup_logging(verbose: bool) -> None:
         level=level,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+
+def cost_summary(stats: RunStats) -> str:
+    """The run's estimated cost, with how many tasks it covers."""
+    if stats.priced_tasks == 0:
+        return "Estimated cost: unavailable (no task has a priced usage)"
+    return (
+        f"Estimated cost: ${stats.estimated_cost_usd:.2f} "
+        f"({stats.priced_tasks} of {stats.completed} tasks priced; /solve calls only, "
+        "solve-context probe excluded)"
     )
 
 
@@ -191,6 +202,7 @@ async def cli(
             print(f"  Avg modification accuracy: {avg_mod:.4f}")
     if stats.errors:
         print(f"Errors:       {stats.errors} (will retry on resume)")
+    print(cost_summary(stats))
     print(f"\nResults: {run_dir}")
 
 

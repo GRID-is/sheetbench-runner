@@ -18,6 +18,7 @@ from .config import NumericToleranceMode
 from .dataset import Dataset
 from .entities import RunMetadata, Task, TaskResult, TaskStatus
 from .evaluator import Evaluator
+from .pricing import PricingSnapshot, estimate_cost_usd, pricing_for
 from .prompt import build_prompt
 from .run_directory import LegacyRunMetadata, RunDirectory
 from .solve_client import (
@@ -47,6 +48,8 @@ class RunStats:
     running_tasks: set[str] = field(default_factory=set)
     regression_accuracies: list[float] = field(default_factory=list)
     modification_accuracies: list[float] = field(default_factory=list)
+    estimated_cost_usd: float = 0.0
+    priced_tasks: int = 0
 
     @property
     def pass_rate(self) -> float:
@@ -73,6 +76,7 @@ class TaskRunner:
         dataset: Dataset,
         run_dir: RunDirectory,
         concurrency: int = 4,
+        pricing: PricingSnapshot | None = None,
     ):
         """
         Initialize the task runner.
@@ -83,6 +87,7 @@ class TaskRunner:
             dataset: The SpreadsheetBench dataset
             run_dir: Run directory for results
             concurrency: Maximum number of parallel tasks
+            pricing: Rates for each task's estimated cost; no estimates without them
 
         """
         self._solve_client = solve_client
@@ -90,6 +95,7 @@ class TaskRunner:
         self._dataset = dataset
         self._run_dir = run_dir
         self._semaphore = asyncio.Semaphore(concurrency)
+        self._pricing = pricing
 
         self._stats = RunStats()
         self._progress: Progress | None = None
@@ -211,6 +217,9 @@ class TaskRunner:
 
         # Count completed = passed + failed
         self._stats.completed = self._stats.passed + self._stats.failed
+        self._stats.estimated_cost_usd, self._stats.priced_tasks = recorded_cost(
+            self._run_dir, tasks
+        )
 
         # Count errors = tasks that should have results but don't
         for task in pending_tasks:
@@ -320,6 +329,13 @@ class TaskRunner:
                 result.tool_calls = response.usage.tool_calls
                 result.input_tokens = response.usage.input_tokens
                 result.output_tokens = response.usage.output_tokens
+                result.input_token_parts = response.usage.input_token_parts()
+                cost = (
+                    estimate_cost_usd(response.usage, self._pricing.rates)
+                    if self._pricing is not None
+                    else None
+                )
+                result.estimated_cost_usd = float(cost) if cost is not None else None
 
                 duration = time.time() - start_time
                 result.duration_seconds = round(duration, 1)
@@ -387,6 +403,17 @@ class TaskRunner:
                 # Don't record - should be retried on resume
                 self._task_completed(task.id, passed=None)
                 return result
+
+
+def recorded_cost(run_dir: RunDirectory, tasks: list[Task]) -> tuple[float, int]:
+    """The summed estimated cost of the tasks' recorded results, and how many had an estimate."""
+    costs = [
+        result["estimated_cost_usd"]
+        for task in tasks
+        if (result := run_dir.get_result(task.id)) is not None
+        and result.get("estimated_cost_usd") is not None
+    ]
+    return sum(costs, 0.0), len(costs)
 
 
 def check_dataset_binding(recorded: str | None, requested: Path) -> None:
@@ -531,12 +558,15 @@ async def run(
         failed = sum(
             1 for task in tasks if (run_dir.get_result(task.id) or {}).get("result") == "fail"
         )
+        estimated_cost_usd, priced_tasks = recorded_cost(run_dir, tasks)
         return RunStats(
             total_tasks=len(tasks),
             completed=passed + failed,
             passed=passed,
             failed=failed,
             skipped=passed + failed,
+            estimated_cost_usd=estimated_cost_usd,
+            priced_tasks=priced_tasks,
         )
 
     if solve_profile_path is None:
@@ -560,6 +590,14 @@ async def run(
             )
 
     api_keys = solve_profile.resolve_api_keys()
+    # A run keeps the rates it started with; a migrated released run recorded none.
+    pricing: PricingSnapshot | None = None
+    if isinstance(existing_metadata, RunMetadata):
+        pricing = existing_metadata.pricing
+    elif existing_metadata is None:
+        # Every /solve call goes to the default model, so its rates price the whole solve.
+        configuration = solve_profile.configuration
+        pricing = pricing_for(configuration.models[configuration.modelRoles["default"]])
 
     async with SolveClient(solve_server_url, timeout_seconds) as solve_client:
         try:
@@ -589,6 +627,7 @@ async def run(
                         notes=run_dir_path.name,
                         numeric_tolerance_mode=numeric_tolerance_mode,
                         dataset_path=str(dataset_path.resolve()),
+                        pricing=pricing,
                     )
                 )
 
@@ -598,6 +637,7 @@ async def run(
                 dataset=dataset,
                 run_dir=run_dir,
                 concurrency=concurrency,
+                pricing=pricing,
             )
             return await runner.run_all(tasks)
         finally:

@@ -220,6 +220,16 @@ async def test_upload_rejects_malformed_success_response(tmp_path: Path, body: o
     [
         ("model", 4),
         ("usage", {"turns": -1, "tool_calls": 1, "input_tokens": 2, "output_tokens": 3}),
+        (
+            "usage",
+            {
+                "turns": 1,
+                "tool_calls": 1,
+                "input_tokens": 2,
+                "output_tokens": 3,
+                "cache_read_input_tokens": -1,
+            },
+        ),
         ("transcript", "not-an-object"),
         ("output_xlsx_base64", "Zg"),
     ],
@@ -233,6 +243,54 @@ async def test_solve_rejects_malformed_success_response(field: str, value: objec
         await activate_context(client)
         with pytest.raises(NonRetryableSolveError, match="Invalid solve response"):
             await client.solve("wb-123", "Test prompt")
+
+
+@respx.mock
+async def test_solve_accepts_an_older_server_without_input_token_parts() -> None:
+    # Arrange
+    respx.post("http://localhost:3000/solve").mock(
+        return_value=httpx.Response(200, json=solve_response())
+    )
+
+    # Act
+    async with SolveClient("http://localhost:3000") as client:
+        await activate_context(client)
+        response = await client.solve("wb-123", "Test prompt")
+
+    # Assert
+    assert response.usage.input_tokens == 1000
+    assert response.usage.input_token_parts() == {}
+
+
+@respx.mock
+async def test_solve_reads_the_input_token_parts_next_to_the_totals() -> None:
+    # Arrange
+    body = solve_response()
+    parts = {
+        "uncached_input_tokens": 100,
+        "cache_read_input_tokens": 800,
+        "cache_write_input_tokens": 100,
+        "cache_write_5m_input_tokens": 60,
+        "cache_write_1h_input_tokens": 40,
+    }
+    body["usage"] = {
+        "turns": 5,
+        "tool_calls": 8,
+        "input_tokens": 1000,
+        "output_tokens": 500,
+        **parts,
+    }
+    respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
+
+    # Act
+    async with SolveClient("http://localhost:3000") as client:
+        await activate_context(client)
+        response = await client.solve("wb-123", "Test prompt")
+
+    # Assert
+    assert response.usage.input_tokens == 1000
+    assert response.usage.output_tokens == 500
+    assert response.usage.input_token_parts() == parts
 
 
 @pytest.mark.parametrize(

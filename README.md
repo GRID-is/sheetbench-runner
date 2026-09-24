@@ -346,6 +346,24 @@ Each entry in `results.json` records the task outcome, timing, and token usage:
 }
 ```
 
+### Cost estimate
+
+A solve server that reports the parts of `input_tokens` adds them to the entry:
+`uncached_input_tokens`, `cache_read_input_tokens` and `cache_write_input_tokens`.
+The 5-minute and 1-hour cache writes are in `cache_write_5m_input_tokens` and
+`cache_write_1h_input_tokens`. When the default model of the profile has rates in
+`sheetbench_runner/pricing.py`, the entry also records `estimated_cost_usd`, and the
+run summary prints the sum.
+
+- A new run records the rates and their source under `pricing` in `run.json`. A
+  resumed run uses the recorded rates, not the current catalog.
+- The estimate covers the `/solve` calls: solver, reviewer and summariser. It
+  does not include the probe request that creates a solve context.
+- A task has no estimate when the model has no rates, when the server reports no
+  parts, or when the parts do not add up to `input_tokens`. A part with tokens
+  and no rate also gives no estimate, for example cache writes without a TTL for
+  a model that has only TTL rates.
+
 ## Development
 
 ```bash
