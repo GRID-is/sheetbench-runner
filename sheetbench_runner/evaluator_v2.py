@@ -10,6 +10,7 @@ helper imports below stay acyclic.
 """
 
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -21,6 +22,15 @@ from openpyxl.worksheet.worksheet import Worksheet
 from .config import NumericToleranceMode
 from .entities import EvaluationResult
 from .evaluator import _generate_cell_names, _transform_value
+from .findings import (
+    CellState,
+    Classification,
+    Criterion,
+    GradingDetail,
+    GroupCounts,
+    Mismatch,
+    as_text,
+)
 
 _DISPLAY_EQUIVALENT_ERRORS = {"#DIV/0!", "#N/A"}
 # Finance "not meaningful" placeholders: golden #DIV/0! vs output "N/A" (via
@@ -304,6 +314,176 @@ def classify_cells_by_modification(
     return regression, modification
 
 
+_REASONS: dict[Criterion, str] = {
+    "value": "the values differ",
+    "formula": "the task grades formulas and the formulas differ",
+    "formula_on_error": "a side shows an Excel error, so the formulas are compared",
+    "font_color": "the value matches and the font color does not",
+}
+
+
+@dataclass(frozen=True)
+class SheetGrading:
+    """One sheet's tally and the cells its walk rejected."""
+
+    regression_correct: int
+    regression_total: int
+    modification_correct: int
+    modification_total: int
+    mismatches: list[Mismatch]
+    notes: list[str]
+
+
+def _decide(
+    cell_gold: Any,
+    cell_out: Any,
+    sheet_name: str,
+    name: str,
+    with_font_color: bool,
+    with_formula: bool,
+    formula_books: _LazyFormulaWorkbooks | None,
+    numeric_tolerance_mode: NumericToleranceMode,
+) -> tuple[Criterion, bool]:
+    """
+    The same decision _compare_cells makes, naming the comparison that made it. A cell the
+    font-color criterion rejects is one whose value matched, so value takes precedence.
+    """
+    if (
+        not with_formula
+        and formula_books is not None
+        and (_has_excel_error(cell_gold.value) or _has_excel_error(cell_out.value))
+    ):
+        ws_gold_f = formula_books.sheet("golden", sheet_name)
+        ws_out_f = formula_books.sheet("output", sheet_name)
+        assert ws_gold_f is not None and ws_out_f is not None
+        return "formula_on_error", compare_cell_formula(
+            ws_gold_f[name].value, ws_out_f[name].value, numeric_tolerance_mode
+        )
+    if with_formula:
+        return "formula", compare_cell_formula(
+            cell_gold.value, cell_out.value, numeric_tolerance_mode
+        )
+    values_match = compare_cell_value(
+        cell_gold.value, cell_out.value, numeric_tolerance_mode=numeric_tolerance_mode
+    )
+    if not with_font_color:
+        return "value", values_match
+    if not values_match:
+        return "value", False
+    return "font_color", compare_font_color(cell_gold.font, cell_out.font)
+
+
+def _cell_state(
+    cell: Any,
+    which: Literal["golden", "output"],
+    sheet_name: str,
+    name: str,
+    with_font_color: bool,
+    formula_books: _LazyFormulaWorkbooks | None,
+) -> CellState:
+    """
+    A rejected cell as the grader read it. With no formula-level books the value level is
+    already the formula level, which is what with_formula grading loads.
+    """
+    formula = as_text(cell.value)
+    if formula_books is not None:
+        ws = formula_books.sheet(which, sheet_name)
+        formula = None if ws is None else as_text(ws[name].value)
+    return CellState(
+        value=as_text(cell.value),
+        formula=formula,
+        font_color=_get_color_rgb(cell.font.color) if with_font_color else None,
+    )
+
+
+def grade_classified_cells(
+    wb_golden: openpyxl.Workbook,
+    wb_output: openpyxl.Workbook,
+    sheet_name: str,
+    regression_cells: list[str],
+    modification_cells: list[str],
+    with_font_color: bool,
+    with_formula: bool,
+    formula_books: _LazyFormulaWorkbooks | None,
+    numeric_tolerance_mode: NumericToleranceMode = "relative",
+) -> SheetGrading:
+    """
+    Compare output vs golden for both cell groups, recording every rejected cell.
+    A sheet missing from the output scores all its cells wrong and is a note, not a cell.
+    """
+    if _find_sheet(wb_output, sheet_name) is None:
+        return SheetGrading(
+            regression_correct=0,
+            regression_total=len(regression_cells),
+            modification_correct=0,
+            modification_total=len(modification_cells),
+            mismatches=[],
+            notes=[f"{sheet_name} worksheet not found"],
+        )
+
+    ws_golden = _find_sheet(wb_golden, sheet_name)
+    ws_output = _find_sheet(wb_output, sheet_name)
+
+    def grade(cells: list[str], classification: Classification) -> tuple[int, list[Mismatch]]:
+        correct = 0
+        found: list[Mismatch] = []
+        for name in cells:
+            # Narrowed here (not above) so an empty `cells` list never
+            # dereferences a None sheet, matching upstream's lazy access.
+            assert ws_golden is not None and ws_output is not None
+            cell_gold, cell_out = ws_golden[name], ws_output[name]
+            criterion, matched = _decide(
+                cell_gold,
+                cell_out,
+                sheet_name,
+                name,
+                with_font_color,
+                with_formula,
+                formula_books,
+                numeric_tolerance_mode,
+            )
+            if matched:
+                correct += 1
+                continue
+            found.append(
+                Mismatch(
+                    sheet=sheet_name,
+                    cell=name,
+                    classification=classification,
+                    criterion=criterion,
+                    reason=_REASONS[criterion],
+                    expected=_cell_state(
+                        cell_gold, "golden", sheet_name, name, with_font_color, formula_books
+                    ),
+                    actual=_cell_state(
+                        cell_out, "output", sheet_name, name, with_font_color, formula_books
+                    ),
+                )
+            )
+        return correct, found
+
+    reg_correct, reg_found = grade(regression_cells, "regression")
+    mod_correct, mod_found = grade(modification_cells, "modification")
+
+    return SheetGrading(
+        regression_correct=reg_correct,
+        regression_total=len(regression_cells),
+        modification_correct=mod_correct,
+        modification_total=len(modification_cells),
+        mismatches=reg_found + mod_found,
+        notes=[],
+    )
+
+
+def grading_messages(grading: SheetGrading) -> list[str]:
+    """The grader's own error lines, derived from what its walk rejected."""
+    return grading.notes + [
+        f"{m.classification.capitalize()} error at {m.sheet}!{m.cell}: "
+        f"answer={m.expected.value}, output={m.actual.value}"
+        for m in grading.mismatches
+    ]
+
+
 def compare_classified_cells(
     wb_golden: openpyxl.Workbook,
     wb_output: openpyxl.Workbook,
@@ -318,71 +498,24 @@ def compare_classified_cells(
     """
     Compare output vs golden for both cell groups.
     Returns (reg_correct, reg_total, mod_correct, mod_total, error_messages).
-    A sheet missing from the output scores all its cells wrong.
     """
-    if _find_sheet(wb_output, sheet_name) is None:
-        return (
-            0,
-            len(regression_cells),
-            0,
-            len(modification_cells),
-            [f"{sheet_name} worksheet not found"],
-        )
-
-    ws_golden = _find_sheet(wb_golden, sheet_name)
-    ws_output = _find_sheet(wb_output, sheet_name)
-
-    def count_correct(cells: list[str], label: str) -> tuple[int, list[str]]:
-        correct = 0
-        errors: list[str] = []
-        for name in cells:
-            # Narrowed here (not above) so an empty `cells` list never
-            # dereferences a None sheet, matching upstream's lazy access.
-            assert ws_golden is not None and ws_output is not None
-            cell_gold, cell_out = ws_golden[name], ws_output[name]
-            if (
-                not with_formula
-                and formula_books is not None
-                and (_has_excel_error(cell_gold.value) or _has_excel_error(cell_out.value))
-            ):
-                ws_gold_f = formula_books.sheet("golden", sheet_name)
-                ws_out_f = formula_books.sheet("output", sheet_name)
-                assert ws_gold_f is not None and ws_out_f is not None
-                matched = compare_cell_formula(
-                    ws_gold_f[name].value,
-                    ws_out_f[name].value,
-                    numeric_tolerance_mode,
-                )
-            else:
-                matched = _compare_cells(
-                    cell_gold,
-                    cell_out,
-                    with_font_color,
-                    with_formula,
-                    numeric_tolerance_mode,
-                )
-            if matched:
-                correct += 1
-            else:
-                gold_val, out_val = cell_gold.value, cell_out.value
-                if hasattr(gold_val, "text"):
-                    gold_val = gold_val.text
-                if hasattr(out_val, "text"):
-                    out_val = out_val.text
-                errors.append(
-                    f"{label} error at {sheet_name}!{name}: answer={gold_val}, output={out_val}"
-                )
-        return correct, errors
-
-    reg_correct, reg_errors = count_correct(regression_cells, "Regression")
-    mod_correct, mod_errors = count_correct(modification_cells, "Modification")
-
+    grading = grade_classified_cells(
+        wb_golden,
+        wb_output,
+        sheet_name,
+        regression_cells,
+        modification_cells,
+        with_font_color,
+        with_formula,
+        formula_books,
+        numeric_tolerance_mode,
+    )
     return (
-        reg_correct,
-        len(regression_cells),
-        mod_correct,
-        len(modification_cells),
-        reg_errors + mod_errors,
+        grading.regression_correct,
+        grading.regression_total,
+        grading.modification_correct,
+        grading.modification_total,
+        grading_messages(grading),
     )
 
 
@@ -413,6 +546,8 @@ def compare_workbooks(
 
     reg_correct = reg_total = mod_correct = mod_total = 0
     errors: list[str] = []
+    mismatches: list[Mismatch] = []
+    notes: list[str] = []
     try:
         wb_input = openpyxl.load_workbook(filename=input_path, data_only=data_only)
         wb_golden = openpyxl.load_workbook(filename=golden_path, data_only=data_only)
@@ -428,7 +563,7 @@ def compare_workbooks(
                 formula_books,
                 numeric_tolerance_mode,
             )
-            rc, rt, mc, mt, msgs = compare_classified_cells(
+            grading = grade_classified_cells(
                 wb_golden,
                 wb_output,
                 sheet_name,
@@ -439,11 +574,13 @@ def compare_workbooks(
                 formula_books,
                 numeric_tolerance_mode,
             )
-            reg_correct += rc
-            reg_total += rt
-            mod_correct += mc
-            mod_total += mt
-            errors.extend(msgs)
+            reg_correct += grading.regression_correct
+            reg_total += grading.regression_total
+            mod_correct += grading.modification_correct
+            mod_total += grading.modification_total
+            errors.extend(grading_messages(grading))
+            mismatches.extend(grading.mismatches)
+            notes.extend(grading.notes)
     finally:
         if wb_input is not None:
             wb_input.close()
@@ -475,4 +612,24 @@ def compare_workbooks(
         message=message,
         regression_accuracy=reg_ratio,
         modification_accuracy=mod_ratio,
+        grading=GradingDetail(
+            numeric_tolerance_mode=numeric_tolerance_mode,
+            tolerance=0.01,
+            with_font_color=with_font_color,
+            with_formula=with_formula,
+            regression=GroupCounts(
+                correct=reg_correct,
+                total=reg_total,
+                wrong=reg_total - reg_correct,
+                accuracy=reg_ratio,
+            ),
+            modification=GroupCounts(
+                correct=mod_correct,
+                total=mod_total,
+                wrong=mod_total - mod_correct,
+                accuracy=mod_ratio,
+            ),
+            mismatches=mismatches,
+            notes=notes,
+        ),
     )
