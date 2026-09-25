@@ -18,6 +18,7 @@ from .config import NumericToleranceMode
 from .dataset import Dataset
 from .entities import RunMetadata, Task, TaskResult, TaskStatus
 from .evaluator import Evaluator
+from .findings import task_findings
 from .pricing import PricingSnapshot, estimate_cost_usd, pricing_for
 from .prompt import build_prompt
 from .run_directory import LegacyRunMetadata, RunDirectory
@@ -359,6 +360,10 @@ class TaskRunner:
                 result.message = eval_result.message
                 result.regression_accuracy = eval_result.regression_accuracy
                 result.modification_accuracy = eval_result.modification_accuracy
+                if eval_result.grading is not None:
+                    result.findings = task_findings(
+                        task.id, eval_result.grading, eval_result.passed
+                    )
                 result.status = TaskStatus.EVALUATED
 
                 status_str = "PASS" if eval_result.passed else "FAIL"
@@ -533,6 +538,10 @@ async def run(
             # Update the result in place
             existing["result"] = new_result
             existing["message"] = eval_result.message
+            if eval_result.grading is not None:
+                existing["findings_file"] = run_dir.write_findings(
+                    task_findings(task.id, eval_result.grading, eval_result.passed)
+                )
             if eval_result.regression_accuracy is not None:
                 existing["regression_accuracy"] = eval_result.regression_accuracy
             else:
@@ -544,7 +553,7 @@ async def run(
             reevaluated += 1
 
         if reevaluated > 0:
-            run_dir._save_results()
+            run_dir.save_results()
             if existing_metadata is not None and (mode_changed or not metadata_mode_is_recorded):
                 run_dir.write_metadata(
                     existing_metadata.model_copy(

@@ -73,6 +73,41 @@ def test_absent_environment_variable_is_rejected(
         load_solve_profile(write_profile(tmp_path / "profile.json")).resolve_api_keys()
 
 
+def test_context_window_is_preserved_for_any_transport(tmp_path: Path) -> None:
+    raw = {
+        "models": {
+            "primary": {
+                "transport": "openai-compatible",
+                "apiKeyEnv": "KEY",
+                "contextWindow": 130000,
+                "request": {"model": "m"},
+            },
+            "native": {
+                "transport": "anthropic",
+                "apiKeyEnv": "KEY",
+                "contextWindow": 1000000,
+                "request": {"model": "claude"},
+            },
+        },
+        "modelRoles": {"default": "primary"},
+    }
+    profile = load_solve_profile(write_profile(tmp_path / "profile.json", raw))
+    assert profile.configuration.model_dump() == raw
+
+
+@pytest.mark.parametrize("window", [0, 999, 12.5, 100_000_001])
+def test_rejects_invalid_context_window(tmp_path: Path, window: object) -> None:
+    model = {
+        "transport": "openai-compatible",
+        "apiKeyEnv": "KEY",
+        "contextWindow": window,
+        "request": {"model": "m"},
+    }
+    raw = {"models": {"primary": model}, "modelRoles": {"default": "primary"}}
+    with pytest.raises(SolveProfileError, match="contextWindow"):
+        load_solve_profile(write_profile(tmp_path / "profile.json", raw))
+
+
 @pytest.mark.parametrize("blank_value", ["", "   "])
 def test_blank_environment_value_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blank_value: str
@@ -264,9 +299,9 @@ def test_rejects_base_url_for_native_transports(tmp_path: Path, transport: str) 
             "anthropic-profile.json",
             "anthropic",
             {
-                "model": "claude-opus-5",
+                "model": "claude-opus-5-5",
                 "max_tokens": 64000,
-                "output_config": {"effort": "low"},
+                "output_config": {"effort": "medium"},
                 "thinking": {"type": "adaptive", "display": "summarized"},
             },
             "ANTHROPIC_API_KEY",
@@ -312,6 +347,7 @@ def test_qwen_profile_uses_thinking_without_effort_overrides() -> None:
                 "transport": "openai-compatible",
                 "apiKeyEnv": "COMPATIBLE_API_KEY",
                 "baseUrl": "https://inference.example.com/v1",
+                "contextWindow": 130000,
                 "request": {
                     "model": "qwen3.8-27b",
                     "max_tokens": 16000,

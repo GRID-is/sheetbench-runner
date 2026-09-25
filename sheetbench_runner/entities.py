@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, StrictInt
 
+from .findings import GradingDetail, TaskFindings
 from .pricing import PricingSnapshot
 from .solve_profile import SolveConfiguration
 
@@ -117,13 +118,15 @@ class EvaluationResult:
     """Result of evaluating a task output against the golden file.
 
     regression_accuracy/modification_accuracy are set only by the v2 grader
-    (None on the v1 path).
+    (None on the v1 path). `grading` carries the cell-level record of that same
+    walk, and stays None wherever no v2 walk ran: the v1 path and load errors.
     """
 
     passed: bool
     message: str = ""
     regression_accuracy: float | None = None
     modification_accuracy: float | None = None
+    grading: GradingDetail | None = None
 
 
 @dataclass
@@ -150,6 +153,9 @@ class TaskResult:
     message: str = ""
     regression_accuracy: float | None = None
     modification_accuracy: float | None = None
+    # The cell-level grading. RunDirectory writes it out and fills in findings_file.
+    findings: TaskFindings | None = None
+    findings_file: str | None = None
     error: str | None = None  # For transient failures (not recorded to results.json)
     started_at: datetime | None = field(default=None, repr=False)
 
@@ -172,6 +178,8 @@ class TaskResult:
             d["transcript_file"] = self.transcript_file
         if self.output_file:
             d["output_file"] = self.output_file
+        if self.findings_file:
+            d["findings_file"] = self.findings_file
         if self.result:
             d["result"] = self.result
         if self.message:

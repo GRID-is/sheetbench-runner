@@ -29,6 +29,9 @@ class ProfileModel(BaseModel):
     transport: Literal["anthropic", "openai-responses", "openai-compatible"]
     apiKeyEnv: str
     baseUrl: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    contextWindow: int | None = Field(
+        default=None, ge=1000, le=100_000_000, exclude_if=lambda value: value is None
+    )
     request: Mapping[str, Any]
 
     @field_validator("baseUrl", mode="before")
