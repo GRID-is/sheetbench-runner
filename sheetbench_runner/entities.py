@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, StrictInt
 
 from .findings import GradingDetail, TaskFindings
+from .pricing import PricingSnapshot
 from .solve_profile import SolveConfiguration
 
 
@@ -75,8 +76,24 @@ class Task(BaseModel):
         return f"spreadsheet/{self.id}/1_{self.id}_golden.xlsx"
 
 
+INPUT_TOKEN_PARTS = {
+    "uncached_input_tokens",
+    "cache_read_input_tokens",
+    "cache_write_input_tokens",
+    "cache_write_5m_input_tokens",
+    "cache_write_1h_input_tokens",
+}
+
+
 class SolveUsage(BaseModel):
-    """Usage statistics from a solve response."""
+    """
+    Usage statistics from a solve response.
+
+    input_tokens counts every input token, cached or not. The parts of it are absent from an older
+    server and from providers that do not report them; they cover the whole input only when
+    uncached + cache read + cache write equals input_tokens. The 5-minute and 1-hour writes are
+    parts of the cache writes.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -84,6 +101,16 @@ class SolveUsage(BaseModel):
     tool_calls: NonNegativeInt
     input_tokens: NonNegativeInt
     output_tokens: NonNegativeInt
+    uncached_input_tokens: NonNegativeInt | None = None
+    cache_read_input_tokens: NonNegativeInt | None = None
+    cache_write_input_tokens: NonNegativeInt | None = None
+    cache_write_5m_input_tokens: NonNegativeInt | None = None
+    cache_write_1h_input_tokens: NonNegativeInt | None = None
+
+    def input_token_parts(self) -> dict[str, int]:
+        """The parts of input_tokens the server reported."""
+        parts: dict[str, int] = self.model_dump(include=INPUT_TOKEN_PARTS, exclude_none=True)
+        return parts
 
 
 @dataclass(frozen=True)
@@ -117,6 +144,8 @@ class TaskResult:
     tool_calls: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    input_token_parts: dict[str, int] = field(default_factory=dict)
+    estimated_cost_usd: float | None = None
     input_file: str | None = None
     transcript_file: str | None = None
     output_file: str | None = None
@@ -139,7 +168,10 @@ class TaskResult:
             "tool_calls": self.tool_calls,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            **self.input_token_parts,
         }
+        if self.estimated_cost_usd is not None:
+            d["estimated_cost_usd"] = self.estimated_cost_usd
         if self.input_file:
             d["input_file"] = self.input_file
         if self.transcript_file:
@@ -177,4 +209,6 @@ class RunMetadata(BaseModel):
     # v2 categories, so regrading against the wrong dataset silently grades
     # against the wrong goldens; recording the binding lets tooling validate.
     dataset_path: str | None = None
+    # The rates the run's cost estimates use; None when the run started without catalog rates.
+    pricing: PricingSnapshot | None = Field(default=None, exclude_if=lambda value: value is None)
     created_at: datetime = Field(default_factory=datetime.now)
