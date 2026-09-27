@@ -346,13 +346,6 @@ Each entry in `results.json` records the task outcome, timing, and token usage:
 }
 ```
 
-The top-level `turns`, `tool_calls`, `input_tokens` and `output_tokens` come from the
-server's `usage`. A server that reports usage scopes counts only the solver's own turns
-there, and also returns `run_usage` (the whole run: solver, reviews and summary calls) and
-`summary_usage` (the summary calls only). The runner records both objects as returned,
-with the cache parts the server reports. Rows from a server without scopes have neither
-object; their top-level usage has no defined scope.
-
 ## Development
 
 ```bash

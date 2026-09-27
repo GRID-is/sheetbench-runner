@@ -3,6 +3,7 @@
 import base64
 import json
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 from unittest.mock import AsyncMock, Mock
@@ -16,6 +17,7 @@ from sheetbench_runner.config import NumericToleranceMode
 from sheetbench_runner.dataset import Dataset
 from sheetbench_runner.entities import EvaluationResult, SolveUsage, Task
 from sheetbench_runner.evaluator import Evaluator
+from sheetbench_runner.pricing import estimate_cost_usd, pricing_for
 from sheetbench_runner.run_directory import RunDirectory, RunMetadataError
 from sheetbench_runner.runner import RunStats, TaskRunner, run
 from sheetbench_runner.solve_client import (
@@ -23,7 +25,7 @@ from sheetbench_runner.solve_client import (
     SolveResponse,
     SolveTimeoutError,
 )
-from sheetbench_runner.solve_profile import SolveProfileError
+from sheetbench_runner.solve_profile import SolveConfiguration, SolveProfileError
 
 PROFILE: dict[str, Any] = {
     "models": {
@@ -865,6 +867,256 @@ async def test_a_timeout_is_recorded_once_as_a_failure(tmp_path: Path, sample_ta
     assert stats.failed == 1
 
 
+OPUS_PROFILE: dict[str, Any] = {
+    "models": {
+        "primary": {
+            "transport": "anthropic",
+            "apiKeyEnv": "OPAQUE_ENV",
+            "request": {"model": "claude-opus-5-5", "max_tokens": 64000},
+        }
+    },
+    "modelRoles": {"default": "primary"},
+}
+RECORDED_PRICING: dict[str, Any] = {
+    "transport": "anthropic",
+    "model": "claude-opus-5-5",
+    "base_url": None,
+    "source": "recorded when the run started",
+    "rates": {
+        "input": "1",
+        "output": "1",
+        "cache_read": "0.1",
+        "cache_write_5m": "2",
+        "cache_write_1h": "3",
+    },
+    "scope": "recorded scope",
+}
+PRICED_USAGE = SolveUsage(
+    turns=2,
+    tool_calls=1,
+    input_tokens=12_500_000,
+    output_tokens=100_000,
+    uncached_input_tokens=1_000_000,
+    cache_read_input_tokens=10_000_000,
+    cache_write_input_tokens=1_500_000,
+    cache_write_5m_input_tokens=1_000_000,
+    cache_write_1h_input_tokens=500_000,
+)
+
+
+def solved_with(usage: SolveUsage) -> SolveResponse:
+    return solved().model_copy(update={"usage": usage})
+
+
+def priced_runner(tmp_path: Path, responses: list[object]) -> tuple[TaskRunner, Path]:
+    runner, run_path, _ = runner_with(
+        tmp_path, responses, [f"wb-{n}" for n in range(len(responses))]
+    )
+    opus = SolveConfiguration.model_validate(OPUS_PROFILE).models["primary"]
+    runner._pricing = pricing_for(opus)
+    return runner, run_path
+
+
+async def test_a_task_with_input_token_parts_records_them_and_its_estimated_cost(
+    tmp_path: Path, sample_task: Task
+) -> None:
+    # Arrange: $4 uncached + $2 read + $5 5m write + $4 1h write + $2 output at Opus 5.5 rates.
+    runner, run_path = priced_runner(tmp_path, [solved_with(PRICED_USAGE)])
+
+    # Act
+    stats = await runner.run_all([sample_task])
+
+    # Assert
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert row["input_tokens"] == 12_500_000
+    assert row["uncached_input_tokens"] == 1_000_000
+    assert row["cache_read_input_tokens"] == 10_000_000
+    assert row["cache_write_input_tokens"] == 1_500_000
+    assert row["cache_write_5m_input_tokens"] == 1_000_000
+    assert row["cache_write_1h_input_tokens"] == 500_000
+    assert row["estimated_cost_usd"] == 17.0
+    assert stats.estimated_cost_usd == 17.0
+    assert stats.priced_tasks == 1
+
+
+async def test_a_task_from_an_older_server_records_no_estimated_cost(
+    tmp_path: Path, sample_task: Task
+) -> None:
+    # Arrange
+    runner, run_path = priced_runner(tmp_path, [solved()])
+
+    # Act
+    stats = await runner.run_all([sample_task])
+
+    # Assert
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert row["input_tokens"] == 2
+    assert "uncached_input_tokens" not in row
+    assert "estimated_cost_usd" not in row
+    assert stats.priced_tasks == 0
+    assert stats.estimated_cost_usd == 0
+
+
+async def test_scoped_cost_uses_whole_run_usage_not_solver_usage(
+    tmp_path: Path, sample_task: Task
+) -> None:
+    response = solved_with(PRICED_USAGE.model_copy(update={"output_tokens": 50_000}))
+    response = response.model_copy(update={"run_usage": PRICED_USAGE})
+    runner, run_path = priced_runner(tmp_path, [response])
+
+    stats = await runner.run_all([sample_task])
+
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert row["output_tokens"] == 50_000
+    assert row["run_usage"]["output_tokens"] == 100_000
+    assert row["estimated_cost_usd"] == 17.0
+    assert stats.estimated_cost_usd == 17.0
+
+
+async def test_unpriceable_run_usage_does_not_fall_back_to_solver_cost(
+    tmp_path: Path, sample_task: Task
+) -> None:
+    response = solved_with(PRICED_USAGE).model_copy(update={"run_usage": solved().usage})
+    runner, run_path = priced_runner(tmp_path, [response])
+
+    stats = await runner.run_all([sample_task])
+
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert "estimated_cost_usd" not in row
+    assert stats.priced_tasks == 0
+
+
+async def test_the_run_cost_sums_the_recorded_estimates_of_resumed_tasks(
+    tmp_path: Path, sample_task: Task, sample_task_minimal: Task
+) -> None:
+    # Arrange: one task was priced in an earlier invocation, one runs now.
+    runner, run_path = priced_runner(tmp_path, [solved_with(PRICED_USAGE)])
+    (run_path / "results.json").write_text(
+        json.dumps(
+            [{"task_id": sample_task_minimal.id, "result": "pass", "estimated_cost_usd": 1.5}]
+        )
+    )
+    runner._run_dir.load()
+
+    # Act
+    stats = await runner.run_all([sample_task, sample_task_minimal])
+
+    # Assert
+    assert stats.estimated_cost_usd == 18.5
+    assert stats.priced_tasks == 2
+
+
+@respx.mock
+async def test_a_new_run_records_the_rates_of_its_default_model(
+    tmp_path: Path,
+    sample_dataset_dir: Path,
+    sample_task: Task,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange
+    monkeypatch.setenv("OPAQUE_ENV", "key")
+    monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=RunStats(total_tasks=1)))
+    context_routes()
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text(json.dumps(OPUS_PROFILE))
+    run_dir = tmp_path / "run"
+
+    # Act
+    await run(
+        dataset_path=sample_dataset_dir,
+        run_dir_path=run_dir,
+        solve_server_url="http://localhost:3000",
+        solve_profile_path=profile_path,
+        tasks=[sample_task],
+    )
+
+    # Assert
+    pricing = json.loads((run_dir / "run.json").read_text())["pricing"]
+    assert pricing["transport"] == "anthropic"
+    assert pricing["model"] == "claude-opus-5-5"
+    assert pricing["rates"] == {
+        "input": "4",
+        "output": "20",
+        "cache_read": "0.20",
+        "cache_write_5m": "5",
+        "cache_write_1h": "8",
+        "cache_write": None,
+    }
+    assert pricing["source"]
+    assert "probe" in pricing["scope"]
+
+
+@respx.mock
+async def test_a_new_run_of_a_model_without_rates_records_no_pricing(
+    tmp_path: Path,
+    sample_dataset_dir: Path,
+    sample_task: Task,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange
+    monkeypatch.setenv("OPAQUE_ENV", "key")
+    monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=RunStats(total_tasks=1)))
+    context_routes()
+    run_dir = tmp_path / "run"
+
+    # Act
+    await run(
+        dataset_path=sample_dataset_dir,
+        run_dir_path=run_dir,
+        solve_server_url="http://localhost:3000",
+        solve_profile_path=write_profile(tmp_path / "profile.json"),
+        tasks=[sample_task],
+    )
+
+    # Assert
+    assert "pricing" not in json.loads((run_dir / "run.json").read_text())
+
+
+@respx.mock
+async def test_a_resumed_run_prices_with_the_rates_it_recorded(
+    tmp_path: Path,
+    sample_dataset_dir: Path,
+    sample_task: Task,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange: the recorded rates differ from the catalog's.
+    monkeypatch.setenv("OPAQUE_ENV", "key")
+    context_routes()
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text(json.dumps(OPUS_PROFILE))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(
+        canonical_run_json(
+            model="claude-opus-5-5",
+            solve_configuration=json.loads(json.dumps(OPUS_PROFILE)),
+            pricing=RECORDED_PRICING,
+        )
+    )
+    created: list[TaskRunner] = []
+
+    async def record_runner(self: TaskRunner, tasks: list[Task]) -> RunStats:
+        created.append(self)
+        return RunStats()
+
+    monkeypatch.setattr(TaskRunner, "run_all", record_runner)
+
+    # Act
+    await run(
+        dataset_path=sample_dataset_dir,
+        run_dir_path=run_dir,
+        solve_server_url="http://localhost:3000",
+        solve_profile_path=profile_path,
+        tasks=[sample_task],
+    )
+
+    # Assert
+    [runner] = created
+    assert runner._pricing is not None
+    assert runner._pricing.source == "recorded when the run started"
+    assert estimate_cost_usd(PRICED_USAGE, runner._pricing.rates) == Decimal("5.6")
+
+
 SOLVER_USAGE = {
     "turns": 3,
     "tool_calls": 7,
@@ -948,6 +1200,7 @@ async def test_scoped_usage_survives_results_resume_and_reevaluation_and_legacy_
             "tool_calls": 7,
             "input_tokens": 1000,
             "output_tokens": 200,
+            "cache_read_input_tokens": 600,
             "run_usage": RUN_USAGE,
             "summary_usage": SUMMARY_USAGE,
             "input_file": "spreadsheet/13-1/1_13-1_init.xlsx",
@@ -962,6 +1215,7 @@ async def test_scoped_usage_survives_results_resume_and_reevaluation_and_legacy_
             "tool_calls": 5,
             "input_tokens": 3000,
             "output_tokens": 300,
+            "cache_read_input_tokens": 900,
             "input_file": "spreadsheet/17-35/1_17-35_init.xlsx",
             "transcript_file": "17-35-transcript.json",
             "output_file": "17-35-output.xlsx",
