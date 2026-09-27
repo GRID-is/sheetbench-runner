@@ -84,6 +84,11 @@ class SolveUsage(BaseModel):
     tool_calls: NonNegativeInt
     input_tokens: NonNegativeInt
     output_tokens: NonNegativeInt
+    uncached_input_tokens: NonNegativeInt | None = None
+    cache_read_input_tokens: NonNegativeInt | None = None
+    cache_write_input_tokens: NonNegativeInt | None = None
+    cache_write_5m_input_tokens: NonNegativeInt | None = None
+    cache_write_1h_input_tokens: NonNegativeInt | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +122,8 @@ class TaskResult:
     tool_calls: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    run_usage: SolveUsage | None = None
+    summary_usage: SolveUsage | None = None
     input_file: str | None = None
     transcript_file: str | None = None
     output_file: str | None = None
@@ -140,6 +147,10 @@ class TaskResult:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
         }
+        if self.run_usage is not None:
+            d["run_usage"] = self.run_usage.model_dump(exclude_none=True)
+        if self.summary_usage is not None:
+            d["summary_usage"] = self.summary_usage.model_dump(exclude_none=True)
         if self.input_file:
             d["input_file"] = self.input_file
         if self.transcript_file:

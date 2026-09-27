@@ -321,6 +321,8 @@ class TaskRunner:
                 result.tool_calls = response.usage.tool_calls
                 result.input_tokens = response.usage.input_tokens
                 result.output_tokens = response.usage.output_tokens
+                result.run_usage = response.run_usage
+                result.summary_usage = response.summary_usage
 
                 duration = time.time() - start_time
                 result.duration_seconds = round(duration, 1)
