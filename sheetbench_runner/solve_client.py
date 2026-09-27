@@ -77,6 +77,8 @@ class SolveResponse(BaseModel):
     model: str
     workbook_id: str = Field(validation_alias=AliasChoices("workbookId", "workbook_id"))
     usage: SolveUsage
+    run_usage: SolveUsage | None = None
+    summary_usage: SolveUsage | None = None
     output_xlsx: Base64Bytes | None = Field(
         default=None, validation_alias=AliasChoices("output_xlsx_base64", "output_xlsx")
     )
