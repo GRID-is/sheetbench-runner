@@ -146,6 +146,8 @@ class TaskResult:
     output_tokens: int | None = None
     input_token_parts: dict[str, int] = field(default_factory=dict)
     estimated_cost_usd: float | None = None
+    run_usage: SolveUsage | None = None
+    summary_usage: SolveUsage | None = None
     input_file: str | None = None
     transcript_file: str | None = None
     output_file: str | None = None
@@ -172,6 +174,10 @@ class TaskResult:
         }
         if self.estimated_cost_usd is not None:
             d["estimated_cost_usd"] = self.estimated_cost_usd
+        if self.run_usage is not None:
+            d["run_usage"] = self.run_usage.model_dump(exclude_none=True)
+        if self.summary_usage is not None:
+            d["summary_usage"] = self.summary_usage.model_dump(exclude_none=True)
         if self.input_file:
             d["input_file"] = self.input_file
         if self.transcript_file:

@@ -14,6 +14,7 @@ import respx
 
 from sheetbench_runner import runner as runner_module
 from sheetbench_runner.config import NumericToleranceMode
+from sheetbench_runner.dataset import Dataset
 from sheetbench_runner.entities import EvaluationResult, SolveUsage, Task
 from sheetbench_runner.evaluator import Evaluator
 from sheetbench_runner.pricing import estimate_cost_usd, pricing_for
@@ -956,6 +957,35 @@ async def test_a_task_from_an_older_server_records_no_estimated_cost(
     assert stats.estimated_cost_usd == 0
 
 
+async def test_scoped_cost_uses_whole_run_usage_not_solver_usage(
+    tmp_path: Path, sample_task: Task
+) -> None:
+    response = solved_with(PRICED_USAGE.model_copy(update={"output_tokens": 50_000}))
+    response = response.model_copy(update={"run_usage": PRICED_USAGE})
+    runner, run_path = priced_runner(tmp_path, [response])
+
+    stats = await runner.run_all([sample_task])
+
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert row["output_tokens"] == 50_000
+    assert row["run_usage"]["output_tokens"] == 100_000
+    assert row["estimated_cost_usd"] == 17.0
+    assert stats.estimated_cost_usd == 17.0
+
+
+async def test_unpriceable_run_usage_does_not_fall_back_to_solver_cost(
+    tmp_path: Path, sample_task: Task
+) -> None:
+    response = solved_with(PRICED_USAGE).model_copy(update={"run_usage": solved().usage})
+    runner, run_path = priced_runner(tmp_path, [response])
+
+    stats = await runner.run_all([sample_task])
+
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert "estimated_cost_usd" not in row
+    assert stats.priced_tasks == 0
+
+
 async def test_the_run_cost_sums_the_recorded_estimates_of_resumed_tasks(
     tmp_path: Path, sample_task: Task, sample_task_minimal: Task
 ) -> None:
@@ -1085,3 +1115,142 @@ async def test_a_resumed_run_prices_with_the_rates_it_recorded(
     assert runner._pricing is not None
     assert runner._pricing.source == "recorded when the run started"
     assert estimate_cost_usd(PRICED_USAGE, runner._pricing.rates) == Decimal("5.6")
+
+
+SOLVER_USAGE = {
+    "turns": 3,
+    "tool_calls": 7,
+    "input_tokens": 1000,
+    "output_tokens": 200,
+    "cache_read_input_tokens": 600,
+}
+SUMMARY_USAGE = {"turns": 1, "tool_calls": 0, "input_tokens": 50, "output_tokens": 20}
+RUN_USAGE = {
+    "turns": 6,
+    "tool_calls": 9,
+    "input_tokens": 2400,
+    "output_tokens": 410,
+    "uncached_input_tokens": 800,
+    "cache_read_input_tokens": 1500,
+    "cache_write_input_tokens": 100,
+    "cache_write_5m_input_tokens": 60,
+    "cache_write_1h_input_tokens": 40,
+}
+LEGACY_USAGE = {
+    "turns": 4,
+    "tool_calls": 5,
+    "input_tokens": 3000,
+    "output_tokens": 300,
+    "cache_read_input_tokens": 900,
+}
+
+
+def solve_body(workbook_id: str, **usage: dict[str, int]) -> dict[str, object]:
+    return {
+        "id": f"solve-{workbook_id}",
+        "model": "opaque-model",
+        "workbookId": workbook_id,
+        **usage,
+        "output_xlsx_base64": base64.b64encode(b"output").decode(),
+        "transcript": {"messages": []},
+    }
+
+
+@respx.mock
+async def test_scoped_usage_survives_results_resume_and_reevaluation_and_legacy_stays_unscoped(
+    tmp_path: Path,
+    sample_dataset_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange
+    monkeypatch.setenv("OPAQUE_ENV", "key")
+    monkeypatch.setattr(Evaluator, "evaluate", Mock(return_value=EvaluationResult(passed=True)))
+    context_routes()
+    scoped_task, legacy_task = Dataset(sample_dataset_dir).filter_tasks({"13-1", "17-35"})
+    for task in (scoped_task, legacy_task):
+        input_path = sample_dataset_dir / task.input_relpath
+        input_path.parent.mkdir(parents=True)
+        input_path.write_bytes(b"input")
+    respx.post("http://localhost:3000/workbooks/upload").mock(
+        side_effect=[
+            httpx.Response(200, json={"id": "wb-scoped"}),
+            httpx.Response(200, json={"id": "wb-legacy"}),
+        ]
+    )
+    solve_route = respx.post("http://localhost:3000/solve").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json=solve_body(
+                    "wb-scoped",
+                    usage=SOLVER_USAGE,
+                    run_usage=RUN_USAGE,
+                    summary_usage=SUMMARY_USAGE,
+                ),
+            ),
+            httpx.Response(200, json=solve_body("wb-legacy", usage=LEGACY_USAGE)),
+        ]
+    )
+    run_dir = tmp_path / "run"
+    profile_path = write_profile(tmp_path / "profile.json")
+    expected_rows = [
+        {
+            "task_id": "13-1",
+            "turns": 3,
+            "tool_calls": 7,
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "cache_read_input_tokens": 600,
+            "run_usage": RUN_USAGE,
+            "summary_usage": SUMMARY_USAGE,
+            "input_file": "spreadsheet/13-1/1_13-1_init.xlsx",
+            "transcript_file": "13-1-transcript.json",
+            "output_file": "13-1-output.xlsx",
+            "result": "pass",
+            "message": "",
+        },
+        {
+            "task_id": "17-35",
+            "turns": 4,
+            "tool_calls": 5,
+            "input_tokens": 3000,
+            "output_tokens": 300,
+            "cache_read_input_tokens": 900,
+            "input_file": "spreadsheet/17-35/1_17-35_init.xlsx",
+            "transcript_file": "17-35-transcript.json",
+            "output_file": "17-35-output.xlsx",
+            "result": "pass",
+            "message": "",
+        },
+    ]
+
+    # Act
+    await run(
+        dataset_path=sample_dataset_dir,
+        run_dir_path=run_dir,
+        solve_server_url="http://localhost:3000",
+        solve_profile_path=profile_path,
+        tasks=[scoped_task],
+    )
+    await run(
+        dataset_path=sample_dataset_dir,
+        run_dir_path=run_dir,
+        solve_server_url="http://localhost:3000",
+        solve_profile_path=profile_path,
+        tasks=[scoped_task, legacy_task],
+    )
+    await run(
+        dataset_path=sample_dataset_dir,
+        run_dir_path=run_dir,
+        solve_server_url="http://localhost:3000",
+        solve_profile_path=None,
+        tasks=[scoped_task, legacy_task],
+        reevaluate=True,
+    )
+
+    # Assert
+    assert solve_route.call_count == 2
+    rows = json.loads((run_dir / "results.json").read_text())
+    for row in rows:
+        del row["duration_seconds"]
+    assert rows == expected_rows

@@ -332,11 +332,16 @@ class TaskRunner:
                 result.output_tokens = response.usage.output_tokens
                 result.input_token_parts = response.usage.input_token_parts()
                 cost = (
-                    estimate_cost_usd(response.usage, self._pricing.rates)
+                    estimate_cost_usd(
+                        response.run_usage if response.run_usage is not None else response.usage,
+                        self._pricing.rates,
+                    )
                     if self._pricing is not None
                     else None
                 )
                 result.estimated_cost_usd = float(cost) if cost is not None else None
+                result.run_usage = response.run_usage
+                result.summary_usage = response.summary_usage
 
                 duration = time.time() - start_time
                 result.duration_seconds = round(duration, 1)
