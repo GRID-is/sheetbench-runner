@@ -299,7 +299,7 @@ def test_rejects_base_url_for_native_transports(tmp_path: Path, transport: str) 
             "anthropic-profile.json",
             "anthropic",
             {
-                "model": "claude-opus-5-5",
+                "model": "claude-sonnet-5-5",
                 "max_tokens": 64000,
                 "output_config": {"effort": "medium"},
                 "thinking": {"type": "adaptive", "display": "summarized"},
