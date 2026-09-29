@@ -16,13 +16,14 @@ from rich.text import Text
 
 from .config import NumericToleranceMode
 from .dataset import Dataset
-from .entities import RunMetadata, Task, TaskResult, TaskStatus
+from .entities import AttemptError, RunMetadata, Task, TaskResult, TaskStatus
 from .evaluator import Evaluator
 from .findings import task_findings
 from .pricing import PricingSnapshot, estimate_cost_usd, pricing_for
 from .prompt import build_prompt
 from .run_directory import LegacyRunMetadata, RunDirectory
 from .solve_client import (
+    ProviderEndedSolveError,
     RetryableSolveError,
     SolveClient,
     SolveTimeoutError,
@@ -301,6 +302,10 @@ class TaskRunner:
                         response = await self._solve_client.solve(workbook_id, prompt)
                         break
                     except RetryableSolveError as e:
+                        failure = e.failure if isinstance(e, ProviderEndedSolveError) else None
+                        self._run_dir.record_error(
+                            AttemptError.of(task.id, attempt, str(e), failure)
+                        )
                         if attempt == TRANSIENT_ATTEMPTS:
                             raise
                         logger.warning(
@@ -361,6 +366,9 @@ class TaskRunner:
                     # Don't record - should be retried on resume
                     result.status = TaskStatus.FAILED
                     result.error = "No output file produced"
+                    self._run_dir.record_error(
+                        AttemptError.of(task.id, attempt, result.error, response.error)
+                    )
                     logger.warning(f"Task {task.id}: No output file (will retry)")
                     self._task_completed(task.id, passed=None)
                     return result

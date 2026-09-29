@@ -133,6 +133,31 @@ class SolveFailure(BaseModel):
     )
 
 
+class AttemptError(BaseModel):
+    """
+    A solve attempt that left no result: the task was retried, or left for a resume.
+
+    code, status and request_id come from the server's error when it reported one.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    task_id: str
+    attempt: int
+    at: datetime
+    message: str
+    code: str | None = None
+    status: int | None = None
+    request_id: str | None = None
+
+    @classmethod
+    def of(
+        cls, task_id: str, attempt: int, message: str, failure: SolveFailure | None = None
+    ) -> "AttemptError":
+        details = failure.model_dump(exclude={"message"}) if failure is not None else {}
+        return cls(task_id=task_id, attempt=attempt, at=datetime.now(), message=message, **details)
+
+
 @dataclass(frozen=True)
 class EvaluationResult:
     """Result of evaluating a task output against the golden file.
