@@ -927,7 +927,7 @@ async def test_each_retried_attempt_is_logged_to_errors_json(
         "code": "rate_limited",
         "status": 429,
         "request_id": "req_1",
-        "transcript_file": f"{sample_task.id}-attempt1-transcript.json",
+        "transcript_file": f"{sample_task.id}-failed1-transcript.json",
         "usage": {"turns": 1, "tool_calls": 0, "input_tokens": 2, "output_tokens": 3},
     }
     assert datetime.fromisoformat(first["at"])
@@ -1012,13 +1012,48 @@ async def test_a_provider_ended_attempt_keeps_its_transcript_usage_and_cost(
 
     # Assert
     [error] = json.loads((run_path / "errors.json").read_text())
-    assert error["transcript_file"] == f"{sample_task.id}-attempt1-transcript.json"
+    assert error["transcript_file"] == f"{sample_task.id}-failed1-transcript.json"
     assert json.loads((run_path / error["transcript_file"]).read_text()) == {"entries": ["dropped"]}
     assert error["usage"]["input_tokens"] == 12_500_000
     assert error["estimated_cost_usd"] == 17.0
     assert stats.estimated_cost_usd == 17.0
     assert stats.failed_attempt_cost_usd == 17.0
     assert stats.priced_failed_attempts == 1
+
+
+async def test_a_resumed_run_keeps_the_attempt_transcripts_of_earlier_invocations(
+    tmp_path: Path, sample_task: Task, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange: two invocations, each ending the task three times.
+    monkeypatch.setattr(runner_module, "TRANSIENT_RETRY_WAIT_SECONDS", 0)
+    failure = SolveFailure(code="connection", message="TypeError: terminated")
+
+    def dropped(invocation: int, attempt: int) -> ProviderEndedSolveError:
+        response = solved().model_copy(
+            update={"error": failure, "transcript": {"attempt": f"{invocation}.{attempt}"}}
+        )
+        return ProviderEndedSolveError(failure, response)
+
+    for invocation in (1, 2):
+        (tmp_path / f"invocation{invocation}").mkdir()
+        runner, run_path, _ = runner_with(
+            tmp_path / f"invocation{invocation}",
+            [dropped(invocation, attempt) for attempt in (1, 2, 3)],
+            ["wb-1", "wb-2", "wb-3"],
+        )
+        if invocation == 2:
+            first_run = tmp_path / "invocation1" / "run"
+            for path in first_run.iterdir():
+                (run_path / path.name).write_bytes(path.read_bytes())
+
+        # Act
+        await runner.run_all([sample_task])
+
+    # Assert
+    errors = json.loads((run_path / "errors.json").read_text())
+    assert [e["attempt"] for e in errors] == [1, 2, 3, 1, 2, 3]
+    transcripts = [json.loads((run_path / e["transcript_file"]).read_text()) for e in errors]
+    assert [t["attempt"] for t in transcripts] == ["1.1", "1.2", "1.3", "2.1", "2.2", "2.3"]
 
 
 async def test_a_run_counts_the_failed_attempt_cost_of_earlier_invocations(

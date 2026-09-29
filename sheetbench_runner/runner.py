@@ -288,6 +288,18 @@ class TaskRunner:
         cost = estimate_cost_usd(usage, self._pricing.rates)
         return float(cost) if cost is not None else None
 
+    def _failed_transcript_name(self, task: Task) -> str:
+        """
+        The first unused <task>-failed<K>-transcript.json.
+
+        Attempt numbers restart on every invocation, so they would overwrite the transcripts
+        an earlier invocation kept; K counts on across all of them.
+        """
+        k = 1
+        while (self._run_dir.path / f"{task.id}-failed{k}-transcript.json").exists():
+            k += 1
+        return f"{task.id}-failed{k}-transcript.json"
+
     def _record_failed_attempt(
         self,
         task: Task,
@@ -304,7 +316,7 @@ class TaskRunner:
         """
         try:
             if response is not None and transcript_file is None and response.transcript:
-                transcript_file = f"{task.id}-attempt{attempt}-transcript.json"
+                transcript_file = self._failed_transcript_name(task)
                 (self._run_dir.path / transcript_file).write_text(
                     json.dumps(response.transcript, indent=2)
                 )
