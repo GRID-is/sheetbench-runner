@@ -396,3 +396,68 @@ async def test_only_a_solve_timeout_counts_as_a_completed_attempt() -> None:
     with pytest.raises(RetryableSolveError):
         async with handle_http_errors("Upload"):
             raise httpx.ReadTimeout("")
+
+
+@respx.mock
+async def test_a_solve_that_ended_early_reads_its_error() -> None:
+    # Arrange
+    body = solve_response()
+    body["error"] = {
+        "code": "agent",
+        "message": "Max turns reached",
+        "status": 429,
+        "requestId": "req_123",
+    }
+    respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
+
+    # Act
+    async with SolveClient("http://localhost:3000") as client:
+        await activate_context(client)
+        response = await client.solve("wb-123", "Test prompt")
+
+    # Assert
+    assert response.error is not None
+    assert response.error.code == "agent"
+    assert response.error.message == "Max turns reached"
+    assert response.error.status == 429
+    assert response.error.request_id == "req_123"
+
+
+@respx.mock
+async def test_a_finished_solve_has_no_error() -> None:
+    respx.post("http://localhost:3000/solve").mock(
+        return_value=httpx.Response(200, json=solve_response())
+    )
+    async with SolveClient("http://localhost:3000") as client:
+        await activate_context(client)
+        response = await client.solve("wb-123", "Test prompt")
+    assert response.error is None
+
+
+@respx.mock
+async def test_an_error_code_the_client_does_not_know_is_kept() -> None:
+    body = solve_response()
+    body["error"] = {"code": "something_new", "message": "Something new"}
+    respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
+    async with SolveClient("http://localhost:3000") as client:
+        await activate_context(client)
+        response = await client.solve("wb-123", "Test prompt")
+    assert response.error is not None
+    assert response.error.code == "something_new"
+
+
+@pytest.mark.parametrize("code", ["rate_limited", "provider_error", "connection"])
+@respx.mock
+async def test_a_solve_the_provider_ended_is_retryable(code: str) -> None:
+    # Arrange
+    body = solve_response()
+    body["error"] = {"code": code, "message": "RateLimitError: 429 Too many requests"}
+    respx.post("http://localhost:3000/solve").mock(return_value=httpx.Response(200, json=body))
+
+    # Act / Assert
+    async with SolveClient("http://localhost:3000") as client:
+        await activate_context(client)
+        with pytest.raises(
+            RetryableSolveError, match=f"Solve ended by the provider \\({code}\\): RateLimitError"
+        ):
+            await client.solve("wb-123", "Test prompt")

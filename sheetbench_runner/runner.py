@@ -342,6 +342,12 @@ class TaskRunner:
                 result.estimated_cost_usd = float(cost) if cost is not None else None
                 result.run_usage = response.run_usage
                 result.summary_usage = response.summary_usage
+                result.solve_error = response.error
+                if response.error is not None:
+                    logger.warning(
+                        f"Task {task.id} solve ended early ({response.error.code}): "
+                        f"{response.error.message}"
+                    )
 
                 duration = time.time() - start_time
                 result.duration_seconds = round(duration, 1)

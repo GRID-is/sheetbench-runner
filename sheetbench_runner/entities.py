@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, StrictInt
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, NonNegativeInt, StrictInt
 
 from .findings import GradingDetail, TaskFindings
 from .pricing import PricingSnapshot
@@ -113,6 +113,26 @@ class SolveUsage(BaseModel):
         return parts
 
 
+class SolveFailure(BaseModel):
+    """
+    Why a solve ended before it finished, as the server reported it.
+
+    The server still answers 200 with the workbook as it stands. code is the kind of failure
+    (rate_limited, provider_error, bad_request, connection, output_limit, aborted, agent, unknown);
+    it is kept as a string so a code added later still reads. status and request_id are there
+    when the provider answered.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    code: str
+    message: str
+    status: int | None = None
+    request_id: str | None = Field(
+        default=None, validation_alias=AliasChoices("requestId", "request_id")
+    )
+
+
 @dataclass(frozen=True)
 class EvaluationResult:
     """Result of evaluating a task output against the golden file.
@@ -158,6 +178,8 @@ class TaskResult:
     # The cell-level grading. RunDirectory writes it out and fills in findings_file.
     findings: TaskFindings | None = None
     findings_file: str | None = None
+    # Why the solve ended early, when the server reported it; recorded next to the grade.
+    solve_error: SolveFailure | None = None
     error: str | None = None  # For transient failures (not recorded to results.json)
     started_at: datetime | None = field(default=None, repr=False)
 
@@ -194,6 +216,8 @@ class TaskResult:
             d["regression_accuracy"] = self.regression_accuracy
         if self.modification_accuracy is not None:
             d["modification_accuracy"] = self.modification_accuracy
+        if self.solve_error is not None:
+            d["solve_error"] = self.solve_error.model_dump(exclude_none=True)
         # Note: error field is intentionally NOT included - transient failures
         # should not be recorded so they get retried on resume
         return d

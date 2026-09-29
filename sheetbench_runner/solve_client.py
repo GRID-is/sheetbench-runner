@@ -7,7 +7,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Self
 import httpx
 from pydantic import AliasChoices, Base64Bytes, BaseModel, ConfigDict, Field
 
-from .entities import SolveUsage
+from .entities import SolveFailure, SolveUsage
 from .solve_profile import SolveConfiguration
 
 
@@ -34,6 +34,10 @@ class NonRetryableSolveError(SolveError):
     This includes 4xx errors (bad request, validation errors).
     """
 
+
+# A solve the provider ended says nothing about the agent: it is retried, and left unrecorded
+# for a resume if every attempt ends the same way.
+RETRYABLE_SOLVE_ERROR_CODES = frozenset({"rate_limited", "provider_error", "connection"})
 
 # Limit error message length for readability
 _ERROR_TEXT_MAX_LENGTH = 200
@@ -83,6 +87,7 @@ class SolveResponse(BaseModel):
         default=None, validation_alias=AliasChoices("output_xlsx_base64", "output_xlsx")
     )
     transcript: dict[str, Any]
+    error: SolveFailure | None = None
 
 
 class SolveContextResponseBody(BaseModel):
@@ -269,7 +274,8 @@ class SolveClient:
             SolveResponse with inline transcript and workbook bytes
 
         Raises:
-            RetryableSolveError: For 5xx errors, timeouts, connection failures
+            RetryableSolveError: For 5xx errors, timeouts, connection failures, and a solve
+                the provider ended (rate limit, provider error, dropped connection)
             NonRetryableSolveError: For 4xx errors
         """
         payload: dict[str, object] = {
@@ -285,9 +291,14 @@ class SolveClient:
             )
             response.raise_for_status()
         try:
-            return SolveResponse.model_validate(response.json())
+            body = SolveResponse.model_validate(response.json())
         except ValueError as e:
             raise NonRetryableSolveError("Invalid solve response") from e
+        if body.error is not None and body.error.code in RETRYABLE_SOLVE_ERROR_CODES:
+            raise RetryableSolveError(
+                f"Solve ended by the provider ({body.error.code}): {body.error.message}"
+            )
+        return body
 
     async def download_workbook(self, workbook_id: str) -> bytes:
         """

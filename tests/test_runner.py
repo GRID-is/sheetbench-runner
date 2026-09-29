@@ -15,7 +15,13 @@ import respx
 from sheetbench_runner import runner as runner_module
 from sheetbench_runner.config import NumericToleranceMode
 from sheetbench_runner.dataset import Dataset
-from sheetbench_runner.entities import EvaluationResult, SolveUsage, Task
+from sheetbench_runner.entities import (
+    EvaluationResult,
+    SolveFailure,
+    SolveUsage,
+    Task,
+    TaskResult,
+)
 from sheetbench_runner.evaluator import Evaluator
 from sheetbench_runner.pricing import estimate_cost_usd, pricing_for
 from sheetbench_runner.run_directory import RunDirectory, RunMetadataError
@@ -847,6 +853,47 @@ async def test_connection_errors_on_every_attempt_leave_the_task_unrecorded(
     assert solve_client.upload_workbook.await_count == 3
     assert not (run_path / "results.json").exists()
     assert stats.errors == 1
+
+
+async def test_a_solve_that_ended_early_records_its_error_with_the_grade(
+    tmp_path: Path, sample_task: Task
+) -> None:
+    # Arrange
+    failure = SolveFailure(code="agent", message="Max turns reached")
+    runner, run_path, _ = runner_with(
+        tmp_path, [solved().model_copy(update={"error": failure})], ["wb-1"]
+    )
+
+    # Act
+    stats = await runner.run_all([sample_task])
+
+    # Assert
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert row["result"] == "pass"
+    assert row["solve_error"] == {"code": "agent", "message": "Max turns reached"}
+    assert stats.passed == 1
+
+
+async def test_a_finished_solve_records_no_error(tmp_path: Path, sample_task: Task) -> None:
+    runner, run_path, _ = runner_with(tmp_path, [solved()], ["wb-1"])
+    await runner.run_all([sample_task])
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert "solve_error" not in row
+
+
+def test_a_solve_error_keeps_the_provider_status_and_request_id() -> None:
+    result = TaskResult(
+        task_id="01_01",
+        solve_error=SolveFailure(
+            code="bad_request", message="BadRequestError: 400", status=400, request_id="req_1"
+        ),
+    )
+    assert result.to_results_dict()["solve_error"] == {
+        "code": "bad_request",
+        "message": "BadRequestError: 400",
+        "status": 400,
+        "request_id": "req_1",
+    }
 
 
 async def test_a_timeout_is_recorded_once_as_a_failure(tmp_path: Path, sample_task: Task) -> None:
