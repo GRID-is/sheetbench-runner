@@ -907,7 +907,10 @@ async def test_each_retried_attempt_is_logged_to_errors_json(
     )
     runner, run_path, _ = runner_with(
         tmp_path,
-        [ProviderEndedSolveError(failure), RetryableSolveError("Connection error: ReadError")]
+        [
+            ProviderEndedSolveError(failure, solved()),
+            RetryableSolveError("Connection error: ReadError"),
+        ]
         + [solved("wb-3")],
         ["wb-1", "wb-2", "wb-3"],
     )
@@ -924,6 +927,8 @@ async def test_each_retried_attempt_is_logged_to_errors_json(
         "code": "rate_limited",
         "status": 429,
         "request_id": "req_1",
+        "transcript_file": f"{sample_task.id}-attempt1-transcript.json",
+        "usage": {"turns": 1, "tool_calls": 0, "input_tokens": 2, "output_tokens": 3},
     }
     assert datetime.fromisoformat(first["at"])
     assert {k: v for k, v in second.items() if k != "at"} == {
@@ -941,7 +946,7 @@ async def test_a_task_left_for_a_resume_logs_every_attempt(
     monkeypatch.setattr(runner_module, "TRANSIENT_RETRY_WAIT_SECONDS", 0)
     failure = SolveFailure(code="connection", message="TypeError: terminated")
     runner, run_path, _ = runner_with(
-        tmp_path, [ProviderEndedSolveError(failure)] * 3, ["wb-1", "wb-2", "wb-3"]
+        tmp_path, [ProviderEndedSolveError(failure, solved())] * 3, ["wb-1", "wb-2", "wb-3"]
     )
 
     await runner.run_all([sample_task])
@@ -987,6 +992,73 @@ async def test_a_run_without_retries_writes_no_errors_json(
     runner, run_path, _ = runner_with(tmp_path, [solved()], ["wb-1"])
     await runner.run_all([sample_task])
     assert not (run_path / "errors.json").exists()
+
+
+async def test_a_provider_ended_attempt_keeps_its_transcript_usage_and_cost(
+    tmp_path: Path, sample_task: Task, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange: the dropped attempt spent PRICED_USAGE, $17 at Opus 5.5 rates.
+    monkeypatch.setattr(runner_module, "TRANSIENT_RETRY_WAIT_SECONDS", 0)
+    failure = SolveFailure(code="connection", message="TypeError: terminated")
+    dropped = solved_with(PRICED_USAGE).model_copy(
+        update={"error": failure, "transcript": {"entries": ["dropped"]}}
+    )
+    runner, run_path = priced_runner(
+        tmp_path, [ProviderEndedSolveError(failure, dropped), solved_with(PRICED_USAGE)]
+    )
+
+    # Act
+    stats = await runner.run_all([sample_task])
+
+    # Assert
+    [error] = json.loads((run_path / "errors.json").read_text())
+    assert error["transcript_file"] == f"{sample_task.id}-attempt1-transcript.json"
+    assert json.loads((run_path / error["transcript_file"]).read_text()) == {"entries": ["dropped"]}
+    assert error["usage"]["input_tokens"] == 12_500_000
+    assert error["estimated_cost_usd"] == 17.0
+    assert stats.estimated_cost_usd == 17.0
+    assert stats.failed_attempt_cost_usd == 17.0
+    assert stats.priced_failed_attempts == 1
+
+
+async def test_a_run_counts_the_failed_attempt_cost_of_earlier_invocations(
+    tmp_path: Path, sample_task: Task
+) -> None:
+    runner, run_path = priced_runner(tmp_path, [solved()])
+    (run_path / "errors.json").write_text(
+        json.dumps(
+            [
+                {"task_id": sample_task.id, "attempt": 1, "estimated_cost_usd": 2.5},
+                {"task_id": sample_task.id, "attempt": 2},
+                {"task_id": "another-task", "attempt": 1, "estimated_cost_usd": 100.0},
+            ]
+        )
+    )
+
+    stats = await runner.run_all([sample_task])
+
+    assert stats.failed_attempt_cost_usd == 2.5
+    assert stats.priced_failed_attempts == 1
+
+
+async def test_an_unwritable_errors_json_does_not_stop_the_retry(
+    tmp_path: Path, sample_task: Task, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange: a half-written errors.json from an earlier invocation.
+    monkeypatch.setattr(runner_module, "TRANSIENT_RETRY_WAIT_SECONDS", 0)
+    runner, run_path, solve_client = runner_with(
+        tmp_path, [RetryableSolveError("Connection error: ReadError"), solved()], ["wb-1", "wb-2"]
+    )
+    (run_path / "errors.json").write_text('[{"task_id": "01_')
+
+    # Act
+    stats = await runner.run_all([sample_task])
+
+    # Assert
+    assert solve_client.solve.await_count == 2
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert row["result"] == "pass"
+    assert stats.errors == 0
 
 
 async def test_a_timeout_is_recorded_once_as_a_failure(tmp_path: Path, sample_task: Task) -> None:

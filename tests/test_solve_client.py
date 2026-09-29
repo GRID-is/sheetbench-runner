@@ -10,6 +10,7 @@ import respx
 
 from sheetbench_runner.solve_client import (
     NonRetryableSolveError,
+    ProviderEndedSolveError,
     RetryableSolveError,
     SolveClient,
     SolveTimeoutError,
@@ -459,5 +460,10 @@ async def test_a_solve_the_provider_ended_is_retryable(code: str) -> None:
         await activate_context(client)
         with pytest.raises(
             RetryableSolveError, match=f"Solve ended by the provider \\({code}\\): RateLimitError"
-        ):
+        ) as raised:
             await client.solve("wb-123", "Test prompt")
+
+    # The attempt's usage and transcript travel with the error.
+    assert isinstance(raised.value, ProviderEndedSolveError)
+    assert raised.value.response.usage.input_tokens == 1000
+    assert raised.value.response.transcript == body["transcript"]

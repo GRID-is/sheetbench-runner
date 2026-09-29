@@ -16,7 +16,7 @@ from rich.text import Text
 
 from .config import NumericToleranceMode
 from .dataset import Dataset
-from .entities import AttemptError, RunMetadata, Task, TaskResult, TaskStatus
+from .entities import AttemptError, RunMetadata, SolveFailure, Task, TaskResult, TaskStatus
 from .evaluator import Evaluator
 from .findings import task_findings
 from .pricing import PricingSnapshot, estimate_cost_usd, pricing_for
@@ -26,6 +26,7 @@ from .solve_client import (
     ProviderEndedSolveError,
     RetryableSolveError,
     SolveClient,
+    SolveResponse,
     SolveTimeoutError,
 )
 from .solve_profile import SolveProfileError, load_solve_profile
@@ -52,6 +53,9 @@ class RunStats:
     modification_accuracies: list[float] = field(default_factory=list)
     estimated_cost_usd: float = 0.0
     priced_tasks: int = 0
+    # What the attempts in errors.json spent: retried, or left for a resume.
+    failed_attempt_cost_usd: float = 0.0
+    priced_failed_attempts: int = 0
 
     @property
     def pass_rate(self) -> float:
@@ -222,6 +226,9 @@ class TaskRunner:
         self._stats.estimated_cost_usd, self._stats.priced_tasks = recorded_cost(
             self._run_dir, tasks
         )
+        self._stats.failed_attempt_cost_usd, self._stats.priced_failed_attempts = (
+            failed_attempt_cost(self._run_dir, tasks)
+        )
 
         # Count errors = tasks that should have results but don't
         for task in pending_tasks:
@@ -273,6 +280,49 @@ class TaskRunner:
             self._progress.advance(self._progress_task)
         self._update_display()
 
+    def _estimated_cost(self, response: SolveResponse) -> float | None:
+        """The response's cost at the run's rates: the whole run's usage when it was scoped."""
+        if self._pricing is None:
+            return None
+        usage = response.run_usage if response.run_usage is not None else response.usage
+        cost = estimate_cost_usd(usage, self._pricing.rates)
+        return float(cost) if cost is not None else None
+
+    def _record_failed_attempt(
+        self,
+        task: Task,
+        attempt: int,
+        message: str,
+        failure: SolveFailure | None = None,
+        response: SolveResponse | None = None,
+        transcript_file: str | None = None,
+    ) -> None:
+        """
+        Log an attempt that left no result to errors.json, with what it spent when it answered.
+
+        A failure to write the log is logged and never stops the retry it would delay.
+        """
+        try:
+            if response is not None and transcript_file is None and response.transcript:
+                transcript_file = f"{task.id}-attempt{attempt}-transcript.json"
+                (self._run_dir.path / transcript_file).write_text(
+                    json.dumps(response.transcript, indent=2)
+                )
+            error = AttemptError(
+                task_id=task.id,
+                attempt=attempt,
+                at=datetime.now(),
+                message=message,
+                **(failure.model_dump(exclude={"message"}) if failure is not None else {}),
+                transcript_file=transcript_file,
+                usage=response.usage if response is not None else None,
+                run_usage=response.run_usage if response is not None else None,
+                estimated_cost_usd=self._estimated_cost(response) if response is not None else None,
+            )
+            self._run_dir.record_error(error)
+        except (OSError, ValueError) as e:
+            logger.warning(f"Task {task.id} attempt {attempt}: could not log to errors.json: {e}")
+
     async def _run_task(self, task: Task) -> TaskResult:
         """
         Run a single task: upload workbook, call /solve, evaluate, record.
@@ -302,10 +352,12 @@ class TaskRunner:
                         response = await self._solve_client.solve(workbook_id, prompt)
                         break
                     except RetryableSolveError as e:
-                        failure = e.failure if isinstance(e, ProviderEndedSolveError) else None
-                        self._run_dir.record_error(
-                            AttemptError.of(task.id, attempt, str(e), failure)
-                        )
+                        if isinstance(e, ProviderEndedSolveError):
+                            self._record_failed_attempt(
+                                task, attempt, str(e), e.failure, e.response
+                            )
+                        else:
+                            self._record_failed_attempt(task, attempt, str(e))
                         if attempt == TRANSIENT_ATTEMPTS:
                             raise
                         logger.warning(
@@ -336,15 +388,7 @@ class TaskRunner:
                 result.input_tokens = response.usage.input_tokens
                 result.output_tokens = response.usage.output_tokens
                 result.input_token_parts = response.usage.input_token_parts()
-                cost = (
-                    estimate_cost_usd(
-                        response.run_usage if response.run_usage is not None else response.usage,
-                        self._pricing.rates,
-                    )
-                    if self._pricing is not None
-                    else None
-                )
-                result.estimated_cost_usd = float(cost) if cost is not None else None
+                result.estimated_cost_usd = self._estimated_cost(response)
                 result.run_usage = response.run_usage
                 result.summary_usage = response.summary_usage
                 result.solve_error = response.error
@@ -366,8 +410,13 @@ class TaskRunner:
                     # Don't record - should be retried on resume
                     result.status = TaskStatus.FAILED
                     result.error = "No output file produced"
-                    self._run_dir.record_error(
-                        AttemptError.of(task.id, attempt, result.error, response.error)
+                    self._record_failed_attempt(
+                        task,
+                        attempt,
+                        result.error,
+                        response.error,
+                        response,
+                        transcript_file=transcript_file,
                     )
                     logger.warning(f"Task {task.id}: No output file (will retry)")
                     self._task_completed(task.id, passed=None)
@@ -436,6 +485,22 @@ def recorded_cost(run_dir: RunDirectory, tasks: list[Task]) -> tuple[float, int]
         for task in tasks
         if (result := run_dir.get_result(task.id)) is not None
         and result.get("estimated_cost_usd") is not None
+    ]
+    return sum(costs, 0.0), len(costs)
+
+
+def failed_attempt_cost(run_dir: RunDirectory, tasks: list[Task]) -> tuple[float, int]:
+    """The summed estimated cost of the tasks' attempts in errors.json, and how many had one."""
+    task_ids = {task.id for task in tasks}
+    try:
+        errors = run_dir.read_errors()
+    except (OSError, ValueError) as e:
+        logger.warning(f"Could not read {run_dir.errors_path}: {e}")
+        return 0.0, 0
+    costs = [
+        error["estimated_cost_usd"]
+        for error in errors
+        if error.get("task_id") in task_ids and error.get("estimated_cost_usd") is not None
     ]
     return sum(costs, 0.0), len(costs)
 
@@ -587,6 +652,7 @@ async def run(
             1 for task in tasks if (run_dir.get_result(task.id) or {}).get("result") == "fail"
         )
         estimated_cost_usd, priced_tasks = recorded_cost(run_dir, tasks)
+        failed_attempt_cost_usd, priced_failed_attempts = failed_attempt_cost(run_dir, tasks)
         return RunStats(
             total_tasks=len(tasks),
             completed=passed + failed,
@@ -595,6 +661,8 @@ async def run(
             skipped=passed + failed,
             estimated_cost_usd=estimated_cost_usd,
             priced_tasks=priced_tasks,
+            failed_attempt_cost_usd=failed_attempt_cost_usd,
+            priced_failed_attempts=priced_failed_attempts,
         )
 
     if solve_profile_path is None:

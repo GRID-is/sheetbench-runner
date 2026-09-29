@@ -137,7 +137,8 @@ class AttemptError(BaseModel):
     """
     A solve attempt that left no result: the task was retried, or left for a resume.
 
-    code, status and request_id come from the server's error when it reported one.
+    code, status and request_id come from the server's error when it reported one; the transcript,
+    usage and cost come from its response when it answered one.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -149,13 +150,11 @@ class AttemptError(BaseModel):
     code: str | None = None
     status: int | None = None
     request_id: str | None = None
-
-    @classmethod
-    def of(
-        cls, task_id: str, attempt: int, message: str, failure: SolveFailure | None = None
-    ) -> "AttemptError":
-        details = failure.model_dump(exclude={"message"}) if failure is not None else {}
-        return cls(task_id=task_id, attempt=attempt, at=datetime.now(), message=message, **details)
+    # When the server answered: the attempt's transcript, what it spent, and what that cost.
+    transcript_file: str | None = None
+    usage: SolveUsage | None = None
+    run_usage: SolveUsage | None = None
+    estimated_cost_usd: float | None = None
 
 
 @dataclass(frozen=True)

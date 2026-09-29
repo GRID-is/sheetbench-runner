@@ -26,9 +26,11 @@ class RetryableSolveError(SolveError):
 class ProviderEndedSolveError(RetryableSolveError):
     """A solve the server answered, but the provider ended: rate limit, 5xx, dropped connection."""
 
-    def __init__(self, failure: SolveFailure):
+    def __init__(self, failure: SolveFailure, response: "SolveResponse"):
         super().__init__(f"Solve ended by the provider ({failure.code}): {failure.message}")
         self.failure = failure
+        # The attempt still spent tokens and has a transcript; the runner keeps both.
+        self.response = response
 
 
 class SolveTimeoutError(SolveError):
@@ -303,7 +305,7 @@ class SolveClient:
         except ValueError as e:
             raise NonRetryableSolveError("Invalid solve response") from e
         if body.error is not None and body.error.code in RETRYABLE_SOLVE_ERROR_CODES:
-            raise ProviderEndedSolveError(body.error)
+            raise ProviderEndedSolveError(body.error, body)
         return body
 
     async def download_workbook(self, workbook_id: str) -> bytes:

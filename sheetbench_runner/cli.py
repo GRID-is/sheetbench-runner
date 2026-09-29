@@ -27,11 +27,17 @@ def cost_summary(stats: RunStats) -> str:
     """The run's estimated cost, with how many tasks it covers."""
     if stats.priced_tasks == 0:
         return "Estimated cost: unavailable (no task has a priced usage)"
-    return (
+    line = (
         f"Estimated cost: ${stats.estimated_cost_usd:.2f} "
         f"({stats.priced_tasks} of {stats.completed} tasks priced; /solve calls only, "
         "solve-context probe excluded)"
     )
+    if stats.priced_failed_attempts > 0:
+        line += (
+            f", plus ${stats.failed_attempt_cost_usd:.2f} "
+            f"in {stats.priced_failed_attempts} failed attempts"
+        )
+    return line
 
 
 def load_task_ids_from_file(file_path: Path) -> set[str]:
