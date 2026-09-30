@@ -884,6 +884,31 @@ async def test_an_interrupt_finishes_running_tasks_without_starting_new_ones(
     assert stats.errors == 0
 
 
+async def test_an_interrupt_does_not_count_an_unstarted_task_with_an_error_row_as_negative_errors(
+    tmp_path: Path, sample_task: Task, sample_task_minimal: Task
+) -> None:
+    # Arrange
+    async def interrupted_solve(workbook_id: str, prompt: str) -> SolveResponse:
+        os.kill(os.getpid(), signal.SIGINT)
+        await asyncio.sleep(0.05)
+        return solved(workbook_id)
+
+    runner, run_path, solve_client = runner_with(tmp_path, [], ["wb-1", "wb-2"])
+    solve_client.solve = AsyncMock(side_effect=interrupted_solve)
+    runner._semaphore = asyncio.Semaphore(1)
+    (run_path / "results.json").write_text(
+        json.dumps([{"task_id": sample_task_minimal.id, "result": None, "error": "boom"}])
+    )
+    runner._run_dir.load()
+
+    # Act
+    stats = await runner.run_all([sample_task, sample_task_minimal])
+
+    # Assert
+    assert stats.not_started == 1
+    assert stats.errors == 0
+
+
 async def test_a_second_interrupt_aborts_the_running_tasks(
     tmp_path: Path, sample_task: Task
 ) -> None:

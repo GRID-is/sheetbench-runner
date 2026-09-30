@@ -116,6 +116,7 @@ class TaskRunner:
         self._live: Live | None = None
         self._stopping = False
         self._aborting = False
+        self._not_started: set[str] = set()
         self._main_task: asyncio.Task[object] | None = None
 
     def _build_display(self) -> Group:
@@ -256,8 +257,9 @@ class TaskRunner:
         )
 
         # Count errors = tasks that should have results but don't
-        errors = sum(1 for task in pending_tasks if self._run_dir.get_result(task.id) is None)
-        self._stats.errors = errors - self._stats.not_started
+        for task in pending_tasks:
+            if task.id not in self._not_started and self._run_dir.get_result(task.id) is None:
+                self._stats.errors += 1
 
         return self._stats
 
@@ -404,6 +406,7 @@ class TaskRunner:
         async with self._semaphore:
             if self._stopping:
                 # Not recorded, so a resume runs it
+                self._not_started.add(task.id)
                 self._stats.not_started += 1
                 return TaskResult(task_id=task.id, status=TaskStatus.PENDING)
             self._stats.running_tasks.add(task.id)
