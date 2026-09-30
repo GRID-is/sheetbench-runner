@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .config import NumericToleranceMode
-from .entities import RunMetadata, TaskResult, TaskStatus
+from .entities import AttemptError, RunMetadata, TaskResult, TaskStatus
 from .findings import TaskFindings
 from .solve_profile import SolveConfiguration
 
@@ -67,6 +67,10 @@ class RunDirectory:
     @property
     def results_path(self) -> Path:
         return self.path / "results.json"
+
+    @property
+    def errors_path(self) -> Path:
+        return self.path / "errors.json"
 
     @property
     def run_json_path(self) -> Path:
@@ -164,6 +168,29 @@ class RunDirectory:
         self._results[result.task_id] = result_dict
         self._completed_task_ids.add(result.task_id)
         self.save_results()
+
+    def record_error(self, error: AttemptError) -> None:
+        """
+        Append a failed attempt to errors.json.
+
+        It keeps the attempts that left no row in results.json, across every invocation of the
+        run, and is written at once like results.json. Raises OSError or ValueError when the
+        file cannot be read or written.
+        """
+        errors = self.read_errors()
+        errors.append(error.model_dump(mode="json", exclude_none=True))
+        self.path.mkdir(parents=True, exist_ok=True)
+        # Written beside and renamed over, so an interrupted write never leaves half a file.
+        partial = self.errors_path.with_name(f".{self.errors_path.name}.partial")
+        partial.write_text(json.dumps(errors, indent=2) + "\n")
+        partial.replace(self.errors_path)
+
+    def read_errors(self) -> list[dict[str, Any]]:
+        """The entries of errors.json, or none when the run has no failed attempts."""
+        if not self.errors_path.exists():
+            return []
+        errors: list[dict[str, Any]] = json.loads(self.errors_path.read_text())
+        return errors
 
     def save_results(self) -> None:
         """Save results to disk, sorted by task_id for consistency."""
