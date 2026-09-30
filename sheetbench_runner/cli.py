@@ -193,7 +193,7 @@ async def cli(
 
     # Print summary
     print("\n" + "=" * 50)
-    print("Run Complete")
+    print("Run Stopped" if stats.not_started else "Run Complete")
     print("=" * 50)
     print(f"Total tasks:  {stats.total_tasks}")
     print(f"Skipped:      {stats.skipped} (already completed)")
@@ -209,6 +209,8 @@ async def cli(
             print(f"  Avg modification accuracy: {avg_mod:.4f}")
     if stats.errors:
         print(f"Errors:       {stats.errors} (will retry on resume)")
+    if stats.not_started:
+        print(f"Not started:  {stats.not_started} (stopped early; will run on resume)")
     print(cost_summary(stats))
     print(f"\nResults: {run_dir}")
 

@@ -56,6 +56,11 @@ already-completed tasks and retries any that failed due to transient errors
 profile's configuration and default model with the run metadata before it
 contacts the server.
 
+To stop a run early without losing work in flight, press **Ctrl-C** (or send
+`SIGTERM`): the runner finishes and grades the running tasks but starts no new
+ones, and a resume picks up the rest. Press Ctrl-C again to abort the running
+tasks too.
+
 ### SpreadsheetBench v2 datasets
 
 The v2 test set is split into category directories, each with its own `dataset.json`.

@@ -1,7 +1,10 @@
 """Tests for once-per-run solve context orchestration."""
 
+import asyncio
 import base64
 import json
+import os
+import signal
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -854,6 +857,51 @@ async def test_connection_errors_on_every_attempt_leave_the_task_unrecorded(
     assert solve_client.upload_workbook.await_count == 3
     assert not (run_path / "results.json").exists()
     assert stats.errors == 1
+
+
+async def test_an_interrupt_finishes_running_tasks_without_starting_new_ones(
+    tmp_path: Path, sample_task: Task, sample_task_minimal: Task
+) -> None:
+    # Arrange
+    async def interrupted_solve(workbook_id: str, prompt: str) -> SolveResponse:
+        os.kill(os.getpid(), signal.SIGINT)
+        await asyncio.sleep(0.05)
+        return solved(workbook_id)
+
+    runner, run_path, solve_client = runner_with(tmp_path, [], ["wb-1", "wb-2"])
+    solve_client.solve = AsyncMock(side_effect=interrupted_solve)
+    runner._semaphore = asyncio.Semaphore(1)
+
+    # Act
+    stats = await runner.run_all([sample_task, sample_task_minimal])
+
+    # Assert
+    assert solve_client.upload_workbook.await_count == 1
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert row["task_id"] == sample_task.id
+    assert row["result"] == "pass"
+    assert stats.not_started == 1
+    assert stats.errors == 0
+
+
+async def test_a_second_interrupt_aborts_the_running_tasks(
+    tmp_path: Path, sample_task: Task
+) -> None:
+    # Arrange
+    async def twice_interrupted_solve(workbook_id: str, prompt: str) -> SolveResponse:
+        os.kill(os.getpid(), signal.SIGINT)
+        await asyncio.sleep(0.05)
+        os.kill(os.getpid(), signal.SIGINT)
+        await asyncio.sleep(10)
+        return solved(workbook_id)
+
+    runner, run_path, solve_client = runner_with(tmp_path, [], ["wb-1"])
+    solve_client.solve = AsyncMock(side_effect=twice_interrupted_solve)
+
+    # Act / Assert
+    with pytest.raises(KeyboardInterrupt):
+        await runner.run_all([sample_task])
+    assert not (run_path / "results.json").exists()
 
 
 async def test_a_solve_that_ended_early_records_its_error_with_the_grade(

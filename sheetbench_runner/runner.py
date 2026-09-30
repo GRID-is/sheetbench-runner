@@ -3,7 +3,10 @@
 import asyncio
 import json
 import logging
+import signal
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +39,7 @@ console = Console()
 
 TRANSIENT_ATTEMPTS = 3
 TRANSIENT_RETRY_WAIT_SECONDS = 30
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 
 
 @dataclass
@@ -48,6 +52,7 @@ class RunStats:
     failed: int = 0
     errors: int = 0  # Transient errors (will retry)
     skipped: int = 0  # Already completed in previous run
+    not_started: int = 0  # Left for a resume by a graceful stop
     running_tasks: set[str] = field(default_factory=set)
     regression_accuracies: list[float] = field(default_factory=list)
     modification_accuracies: list[float] = field(default_factory=list)
@@ -73,6 +78,8 @@ class TaskRunner:
     - Inline evaluation after each task
     - Progress tracking and reporting
     - Graceful handling of transient errors
+    - Graceful stop: the first Ctrl-C (or SIGTERM) finishes the running tasks
+      without starting new ones; a second one aborts them
     """
 
     def __init__(
@@ -107,6 +114,9 @@ class TaskRunner:
         self._progress: Progress | None = None
         self._progress_task: TaskID | None = None
         self._live: Live | None = None
+        self._stopping = False
+        self._aborting = False
+        self._main_task: asyncio.Task[object] | None = None
 
     def _build_display(self) -> Group:
         """Build the rich display with progress bar and running tasks."""
@@ -125,6 +135,16 @@ class TaskRunner:
                 stats_text.append(f"  Errors: {stats.errors}", style="yellow")
         else:
             stats_text = Text("Waiting for first result...", style="dim")
+        if self._stopping:
+            stats_text = Text.assemble(
+                stats_text,
+                "\n",
+                Text(
+                    f"Stopping: finishing {len(stats.running_tasks)} running tasks, "
+                    "starting no new ones (Ctrl-C again to abort)",
+                    style="yellow bold",
+                ),
+            )
 
         # Running tasks table
         running_table = Table.grid(padding=(0, 2))
@@ -191,11 +211,16 @@ class TaskRunner:
                 console.print(f"Logging to: {log_file}")
                 with Live(self._build_display(), console=console, refresh_per_second=4) as live:
                     self._live = live
-                    await asyncio.gather(
-                        *[self._run_task_safe(task) for task in pending_tasks],
-                        return_exceptions=False,  # Exceptions are handled in _run_task_safe
-                    )
+                    with self._stop_signal_handlers():
+                        await asyncio.gather(
+                            *[self._run_task_safe(task) for task in pending_tasks],
+                            return_exceptions=False,  # Exceptions are handled in _run_task_safe
+                        )
                     self._live = None
+            except asyncio.CancelledError:
+                if self._aborting:
+                    raise KeyboardInterrupt from None
+                raise
             finally:
                 # Restore original handlers
                 root_logger.removeHandler(file_handler)
@@ -231,11 +256,46 @@ class TaskRunner:
         )
 
         # Count errors = tasks that should have results but don't
-        for task in pending_tasks:
-            if self._run_dir.get_result(task.id) is None:
-                self._stats.errors += 1
+        errors = sum(1 for task in pending_tasks if self._run_dir.get_result(task.id) is None)
+        self._stats.errors = errors - self._stats.not_started
 
         return self._stats
+
+    @contextmanager
+    def _stop_signal_handlers(self) -> Iterator[None]:
+        """Route Ctrl-C and SIGTERM to a graceful stop, restoring the previous handlers after."""
+        loop = asyncio.get_running_loop()
+        self._main_task = asyncio.current_task()
+        previous = {sig: signal.getsignal(sig) for sig in STOP_SIGNALS}
+        installed = []
+        for sig in STOP_SIGNALS:
+            try:
+                loop.add_signal_handler(sig, self._on_stop_signal)
+            except (NotImplementedError, RuntimeError, ValueError):
+                continue  # No signal support here (Windows, or not the main thread)
+            installed.append(sig)
+        try:
+            yield
+        finally:
+            for sig in installed:
+                loop.remove_signal_handler(sig)
+                signal.signal(sig, previous[sig])
+            self._main_task = None
+
+    def _on_stop_signal(self) -> None:
+        """The first signal stops new tasks from starting; the second aborts the running ones."""
+        if not self._stopping:
+            self._stopping = True
+            logger.warning(
+                "Stop requested: finishing running tasks, starting no new ones "
+                f"({len(self._stats.running_tasks)} running)"
+            )
+            self._update_display()
+            return
+        if not self._aborting and self._main_task is not None:
+            self._aborting = True
+            logger.warning("Second stop requested: aborting running tasks")
+            self._main_task.cancel()
 
     async def _run_task_safe(self, task: Task) -> TaskResult:
         """
@@ -342,6 +402,10 @@ class TaskRunner:
         Uses semaphore to limit concurrency.
         """
         async with self._semaphore:
+            if self._stopping:
+                # Not recorded, so a resume runs it
+                self._stats.not_started += 1
+                return TaskResult(task_id=task.id, status=TaskStatus.PENDING)
             self._stats.running_tasks.add(task.id)
             self._update_display()
             logger.debug(f"Starting task {task.id}")
