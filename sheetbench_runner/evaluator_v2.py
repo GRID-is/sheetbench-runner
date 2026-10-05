@@ -63,7 +63,7 @@ def compare_cell_value(
     v1: Any,
     v2: Any,
     tolerance: float = 0.01,
-    numeric_tolerance_mode: NumericToleranceMode = "relative",
+    numeric_tolerance_mode: NumericToleranceMode = "combined",
 ) -> bool:
     """Tolerant value comparison (upstream compare_cell_value)."""
     # ArrayFormula objects compare by formula text
@@ -138,7 +138,7 @@ def _find_sheet(wb: openpyxl.Workbook, name: str) -> Worksheet | None:
 
 
 def compare_cell_formula(
-    f1: Any, f2: Any, numeric_tolerance_mode: NumericToleranceMode = "relative"
+    f1: Any, f2: Any, numeric_tolerance_mode: NumericToleranceMode = "combined"
 ) -> bool:
     """Compare formula-level cell values (upstream compare_cell_formula)."""
     # ArrayFormula objects (CSE array formulas) compare by formula text
@@ -273,7 +273,7 @@ def classify_cells_by_modification(
     with_font_color: bool,
     with_formula: bool,
     formula_books: _LazyFormulaWorkbooks | None,
-    numeric_tolerance_mode: NumericToleranceMode = "relative",
+    numeric_tolerance_mode: NumericToleranceMode = "combined",
 ) -> tuple[list[str], list[str]]:
     """
     Split the range into regression cells (input == golden, must stay
@@ -405,7 +405,7 @@ def grade_classified_cells(
     with_font_color: bool,
     with_formula: bool,
     formula_books: _LazyFormulaWorkbooks | None,
-    numeric_tolerance_mode: NumericToleranceMode = "relative",
+    numeric_tolerance_mode: NumericToleranceMode = "combined",
 ) -> SheetGrading:
     """
     Compare output vs golden for both cell groups, recording every rejected cell.
@@ -493,7 +493,7 @@ def compare_classified_cells(
     with_font_color: bool,
     with_formula: bool,
     formula_books: _LazyFormulaWorkbooks | None,
-    numeric_tolerance_mode: NumericToleranceMode = "relative",
+    numeric_tolerance_mode: NumericToleranceMode = "combined",
 ) -> tuple[int, int, int, int, list[str]]:
     """
     Compare output vs golden for both cell groups.
@@ -526,7 +526,7 @@ def compare_workbooks(
     ranges: list[tuple[str, str]],
     with_font_color: bool = False,
     with_formula: bool = False,
-    numeric_tolerance_mode: NumericToleranceMode = "relative",
+    numeric_tolerance_mode: NumericToleranceMode = "combined",
 ) -> EvaluationResult:
     """
     Grade an output workbook against golden with the v2 regression/

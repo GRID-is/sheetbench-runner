@@ -111,7 +111,7 @@ def load_task_ids_from_file(file_path: Path) -> set[str]:
     "--numeric-tolerance-mode",
     type=click.Choice(["relative", "combined"]),
     default=None,
-    help="V2 numeric comparison: relative (default) or combined relative/absolute",
+    help="V2 numeric comparison: combined relative/absolute (default) or relative",
 )
 @click.option(
     "-v",

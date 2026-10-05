@@ -59,7 +59,7 @@ class TestCompareCellValue:
         golden = -8.71440022365277e-8
         output = -5.4001247917767614e-12
 
-        assert compare_cell_value(golden, output) is False
+        assert compare_cell_value(golden, output, numeric_tolerance_mode="relative") is False
         assert compare_cell_value(golden, output, numeric_tolerance_mode="combined") is True
 
     def test_combined_tolerance_does_not_match_infinity_to_finite_value(self):
@@ -412,6 +412,26 @@ class TestEvaluatorV2Dispatch:
         result = Evaluator(temp_dir, numeric_tolerance_mode="combined").evaluate(task, output)
 
         assert result.passed is True
+
+    def test_v2_task_defaults_to_combined_numeric_tolerance_mode(self, temp_dir):
+        # Arrange
+        task = make_v2_task(
+            temp_dir,
+            input_cells={"A1": 1, "A2": 0},
+            golden_cells={"A1": -8.71440022365277e-8, "A2": 0},
+            answer_position="'Model'!A1:A2",
+        )
+        output = build_workbook(
+            temp_dir / "out.xlsx",
+            cells={"A1": -5.4001247917767614e-12, "A2": 0},
+        )
+
+        # Act
+        result = Evaluator(temp_dir).evaluate(task, output)
+
+        # Assert
+        assert result.passed is True
+        assert result.grading.numeric_tolerance_mode == "combined"
 
     def test_v1_task_untouched(self, temp_dir):
         # v1 tasks still route to strict grading and carry no ratios

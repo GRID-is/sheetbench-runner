@@ -10,6 +10,7 @@ concurrency = 4           # Number of parallel tasks
 timeout_seconds = 3600    # 1 hour timeout per task
 
 [evaluation]
-# "relative" preserves SpreadsheetBench v2 behavior. "combined" also accepts
-# differences within the 0.01 absolute tolerance, including near-zero values.
-numeric_tolerance_mode = "relative"
+# "combined" (default) also accepts differences within the 0.01 absolute
+# tolerance, including near-zero values. "relative" preserves SpreadsheetBench
+# v2 behavior.
+numeric_tolerance_mode = "combined"
