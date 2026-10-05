@@ -169,7 +169,13 @@ class TestGradingDetail:
         build_workbook(output_path, cells={"B1": -1.80007191374898e-8})
 
         # Act
-        relative = compare_workbooks(input_path, golden_path, output_path, [("Model", "B1:B1")])
+        relative = compare_workbooks(
+            input_path,
+            golden_path,
+            output_path,
+            [("Model", "B1:B1")],
+            numeric_tolerance_mode="relative",
+        )
         combined = compare_workbooks(
             input_path,
             golden_path,
@@ -190,7 +196,13 @@ class TestGradingDetail:
         build_workbook(output_path, cells={"B1": -1.80007191374898e-8})
 
         # Act
-        relative = compare_workbooks(input_path, golden_path, output_path, [("Model", "B1:B1")])
+        relative = compare_workbooks(
+            input_path,
+            golden_path,
+            output_path,
+            [("Model", "B1:B1")],
+            numeric_tolerance_mode="relative",
+        )
         combined = compare_workbooks(
             input_path,
             golden_path,
@@ -365,7 +377,7 @@ class TestPersistence:
         assert written.modification.total == result.grading.modification.total
         assert written.regression.wrong == result.grading.regression.wrong
         assert [m.cell for m in written.mismatches] == [m.cell for m in result.grading.mismatches]
-        assert written.grading.numeric_tolerance_mode == "relative"
+        assert written.grading.numeric_tolerance_mode == "combined"
 
     def test_a_result_without_findings_names_none(self, temp_dir):
         # Arrange: the v1 grader and load errors produce no cell-level grading.

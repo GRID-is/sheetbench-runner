@@ -38,6 +38,23 @@ numeric_tolerance_mode = "combined"
     assert config.numeric_tolerance_mode == "combined"
 
 
+def test_config_defaults_to_combined_numeric_tolerance_mode(tmp_path: Path) -> None:
+    # Arrange
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[solve]
+url = "http://example.test"
+"""
+    )
+
+    # Act
+    configs = [Config.load(None), Config.load(config_path)]
+
+    # Assert
+    assert [config.numeric_tolerance_mode for config in configs] == ["combined", "combined"]
+
+
 async def test_cli_help_exposes_solve_profile_option() -> None:
     result = await CliRunner().invoke(cli, ["--help"])
 

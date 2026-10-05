@@ -308,7 +308,7 @@ class Evaluator:
     def __init__(
         self,
         dataset_path: Path,
-        numeric_tolerance_mode: NumericToleranceMode = "relative",
+        numeric_tolerance_mode: NumericToleranceMode = "combined",
     ):
         """
         Initialize the evaluator.

@@ -86,11 +86,11 @@ all modification cells match and ≥ 99.8% of regression cells are intact. Each
 v2 entry in `results.json` records `regression_accuracy` and
 `modification_accuracy`, and the run summary reports their averages.
 
-By default, numeric comparison preserves the upstream rule: nonzero values use
-relative tolerance, while absolute tolerance applies only when either value is
-exactly zero. Pass `--numeric-tolerance-mode combined` to use a combined 1%
-relative or `0.01` absolute tolerance. This treats tiny iterative-calculation
-residuals as equivalent without changing the default benchmark semantics.
+By default, numeric comparison uses a combined 1% relative or `0.01` absolute
+tolerance. This treats tiny iterative-calculation residuals as equivalent. Pass
+`--numeric-tolerance-mode relative` to preserve the upstream rule: nonzero values
+use relative tolerance, while absolute tolerance applies only when either value
+is exactly zero.
 
 Caveats:
 
@@ -195,8 +195,8 @@ Options:
   --concurrency INTEGER    Number of parallel tasks (default: 4)
   --timeout INTEGER        Timeout per task in seconds (default: 3600)
   --numeric-tolerance-mode [relative|combined]
-                           V2 numeric comparison: relative (default) or combined
-                           relative/absolute
+                           V2 numeric comparison: combined relative/absolute
+                           (default) or relative
   -v, --verbose            Enable verbose logging
   --reevaluate             Re-evaluate all tasks that have output files
                            (useful after parser fixes)
@@ -217,7 +217,7 @@ concurrency = 4
 timeout_seconds = 3600
 
 [evaluation]
-numeric_tolerance_mode = "relative"
+numeric_tolerance_mode = "combined"
 ```
 
 CLI options (`--solve-server-url`, `--solve-profile`, `--concurrency`, `--timeout`,

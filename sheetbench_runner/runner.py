@@ -610,7 +610,7 @@ async def run(
     concurrency: int = 4,
     timeout_seconds: int = 3600,
     reevaluate: bool = False,
-    numeric_tolerance_mode: NumericToleranceMode = "relative",
+    numeric_tolerance_mode: NumericToleranceMode = "combined",
 ) -> RunStats:
     """
     High-level function to run tasks.

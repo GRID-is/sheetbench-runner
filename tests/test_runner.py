@@ -150,6 +150,33 @@ async def test_run_creates_and_deletes_exactly_once_and_stores_profile_metadata(
 
 
 @respx.mock
+async def test_run_without_numeric_tolerance_mode_records_combined(
+    tmp_path: Path,
+    sample_dataset_dir: Path,
+    sample_task: Task,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange
+    monkeypatch.setenv("OPAQUE_ENV", "key")
+    monkeypatch.setattr(TaskRunner, "run_all", AsyncMock(return_value=RunStats(total_tasks=1)))
+    context_routes()
+    run_dir = tmp_path / "run"
+
+    # Act
+    await run(
+        dataset_path=sample_dataset_dir,
+        run_dir_path=run_dir,
+        solve_server_url="http://localhost:3000",
+        solve_profile_path=write_profile(tmp_path / "profile.json"),
+        tasks=[sample_task],
+    )
+
+    # Assert
+    run_data = json.loads((run_dir / "run.json").read_text())
+    assert run_data["numeric_tolerance_mode"] == "combined"
+
+
+@respx.mock
 async def test_resume_creates_a_fresh_context_for_each_invocation(
     tmp_path: Path,
     sample_dataset_dir: Path,
@@ -197,6 +224,7 @@ async def test_matching_resume_creates_context_and_skips_completed_tasks(
         solve_server_url="http://localhost:3000",
         solve_profile_path=write_profile(tmp_path / "profile.json"),
         tasks=[sample_task],
+        numeric_tolerance_mode="relative",
     )
 
     assert stats.skipped == 1
@@ -364,6 +392,7 @@ async def test_mismatched_resume_aborts_before_any_server_request(
             solve_server_url="http://localhost:3000",
             solve_profile_path=write_profile(tmp_path / "profile.json"),
             tasks=[sample_task],
+            numeric_tolerance_mode="relative",
         )
 
     # Assert
@@ -395,6 +424,7 @@ async def test_released_run_is_migrated_to_canonical_metadata_after_context_crea
         solve_server_url="http://localhost:3000",
         solve_profile_path=write_profile(tmp_path / "profile.json"),
         tasks=[sample_task],
+        numeric_tolerance_mode="relative",
     )
 
     # Assert
@@ -460,6 +490,7 @@ async def test_schema_2_run_is_resumed_with_the_profile_configuration(
         solve_server_url="http://localhost:3000",
         solve_profile_path=write_profile(tmp_path / "profile.json"),
         tasks=[sample_task],
+        numeric_tolerance_mode="relative",
     )
 
     # Assert
@@ -511,6 +542,7 @@ async def test_released_run_with_a_different_model_fails_before_context_creation
             solve_server_url="http://localhost:3000",
             solve_profile_path=write_profile(tmp_path / "profile.json"),
             tasks=[sample_task],
+            numeric_tolerance_mode="relative",
         )
 
     # Assert
@@ -545,6 +577,7 @@ async def test_real_legacy_run_without_infuser_config_is_migrated(
         solve_server_url="http://localhost:3000",
         solve_profile_path=write_profile(tmp_path / "profile.json"),
         tasks=[sample_task],
+        numeric_tolerance_mode="relative",
     )
 
     # Assert
@@ -618,6 +651,7 @@ async def test_released_run_resume_requires_a_solve_profile(
             solve_server_url="http://localhost:3000",
             solve_profile_path=None,
             tasks=[sample_task],
+            numeric_tolerance_mode="relative",
         )
 
     # Assert
@@ -1428,6 +1462,7 @@ async def test_a_resumed_run_prices_with_the_rates_it_recorded(
         solve_server_url="http://localhost:3000",
         solve_profile_path=profile_path,
         tasks=[sample_task],
+        numeric_tolerance_mode="relative",
     )
 
     # Assert
