@@ -199,7 +199,7 @@ def test_a_review_on_another_model_is_priced_at_that_models_rates() -> None:
 
     # Act
     cost = estimate_solve_cost_usd(
-        whole, transcript, snapshot("claude-haiku-5-5"), snapshot("claude-opus-5-5")
+        whole, transcript, snapshot("claude-haiku-5-5"), [snapshot("claude-opus-5-5")]
     )
 
     # Assert: 600K at Haiku's $0.10 plus 400K at Opus's $4.
@@ -232,3 +232,34 @@ def test_a_review_on_an_unpriced_model_leaves_the_cost_unknown() -> None:
 
     # Assert
     assert cost is None
+
+
+def test_reviews_on_two_other_models_are_each_priced_at_their_own_rates() -> None:
+    # Arrange: 1M uncached tokens in all; 200K reviewed on Opus, 300K on Haiku, 500K solving.
+    whole = SolveUsage.model_validate(
+        {
+            "turns": 4,
+            "tool_calls": 3,
+            "input_tokens": 1_000_000,
+            "output_tokens": 0,
+            "uncached_input_tokens": 1_000_000,
+            "cache_read_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+        }
+    )
+    parts = {"cacheReadInputTokens": 0, "cacheWriteInputTokens": 0}
+    transcript = {
+        "reviews": [
+            review("claude-opus-5-5", inputTokens=200_000, uncachedInputTokens=200_000, **parts),
+            review("claude-haiku-5-5", inputTokens=300_000, uncachedInputTokens=300_000, **parts),
+        ]
+    }
+    solver = snapshot("claude-opus-5-5").model_copy(update={"model": "claude-solver"})
+
+    # Act
+    cost = estimate_solve_cost_usd(
+        whole, transcript, solver, [snapshot("claude-opus-5-5"), snapshot("claude-haiku-5-5")]
+    )
+
+    # Assert: 200K at $4 + 300K at $0.10 + 500K at the solver's $4.
+    assert cost == Decimal("0.8") + Decimal("0.03") + Decimal("2")

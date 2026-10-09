@@ -1,5 +1,6 @@
 """USD cost estimates from the token usage the providers reported."""
 
+from collections.abc import Sequence
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -103,9 +104,6 @@ def estimate_cost_usd(usage: "SolveUsage", rates: ModelRates) -> Decimal | None:
     )
 
 
-# The solve-context role whose model runs the reviewer; its reviews are priced at its rates.
-REVIEW_ROLE = "review"
-
 # Each SolveUsage field and the key a transcript's review records it under.
 REVIEW_USAGE_KEYS = {
     "turns": "turns",
@@ -155,27 +153,33 @@ def estimate_solve_cost_usd(
     usage: "SolveUsage",
     transcript: dict[str, Any],
     pricing: PricingSnapshot,
-    review_pricing: PricingSnapshot | None = None,
+    model_pricing: Sequence[PricingSnapshot] = (),
 ) -> Decimal | None:
     """
-    A solve's cost when its reviews may run on another model than the solver.
+    A solve's cost, priced by the model each part ran on.
 
-    The transcript's reviews that ran on another model than `pricing`'s are priced at
-    `review_pricing`, and the rest of `usage` at `pricing`. None when such a review ran on a
-    model `review_pricing` does not price, or its usage cannot be taken out of the whole.
+    The transcript's reviews that ran on another model than `pricing`'s are priced at that
+    model's entry in `model_pricing`, and the rest of `usage` at `pricing`. None when such a
+    review ran on a model `model_pricing` does not price, or its usage cannot be taken out of
+    the whole.
     """
-    reviews = [r for r in transcript.get("reviews") or [] if isinstance(r, dict)]
-    other = [r for r in reviews if r.get("model") != pricing.model]
-    if not other:
-        return estimate_cost_usd(usage, pricing.rates)
-    if review_pricing is None or any(r.get("model") != review_pricing.model for r in other):
-        return None
-    review_usage = _summed_review_usage(other)
-    solver_usage = _without(usage, review_usage) if review_usage is not None else None
-    if review_usage is None or solver_usage is None:
-        return None
-    solver_cost = estimate_cost_usd(solver_usage, pricing.rates)
-    review_cost = estimate_cost_usd(review_usage, review_pricing.rates)
-    if solver_cost is None or review_cost is None:
-        return None
-    return solver_cost + review_cost
+    by_model = {snapshot.model: snapshot for snapshot in model_pricing}
+    reviews_by_model: dict[str, list[dict[str, Any]]] = {}
+    for review in transcript.get("reviews") or []:
+        if isinstance(review, dict) and review.get("model") != pricing.model:
+            reviews_by_model.setdefault(str(review.get("model")), []).append(review)
+    total = Decimal(0)
+    rest = usage
+    for model, reviews in reviews_by_model.items():
+        snapshot = by_model.get(model)
+        review_usage = _summed_review_usage(reviews)
+        if snapshot is None or review_usage is None:
+            return None
+        remaining = _without(rest, review_usage)
+        review_cost = estimate_cost_usd(review_usage, snapshot.rates)
+        if remaining is None or review_cost is None:
+            return None
+        rest = remaining
+        total += review_cost
+    solver_cost = estimate_cost_usd(rest, pricing.rates)
+    return total + solver_cost if solver_cost is not None else None

@@ -23,7 +23,6 @@ from .entities import AttemptError, RunMetadata, SolveFailure, Task, TaskResult,
 from .evaluator import Evaluator
 from .findings import task_findings
 from .pricing import (
-    REVIEW_ROLE,
     PricingSnapshot,
     estimate_cost_usd,
     estimate_solve_cost_usd,
@@ -96,7 +95,7 @@ class TaskRunner:
         run_dir: RunDirectory,
         concurrency: int = 4,
         pricing: PricingSnapshot | None = None,
-        review_pricing: PricingSnapshot | None = None,
+        model_pricing: list[PricingSnapshot] | None = None,
     ):
         """
         Initialize the task runner.
@@ -108,7 +107,7 @@ class TaskRunner:
             run_dir: Run directory for results
             concurrency: Maximum number of parallel tasks
             pricing: Rates for each task's estimated cost; no estimates without them
-            review_pricing: Rates for reviews that ran on the review role's own model
+            model_pricing: Rates of the profile's other models, for reviews that ran on one
 
         """
         self._solve_client = solve_client
@@ -117,7 +116,7 @@ class TaskRunner:
         self._run_dir = run_dir
         self._semaphore = asyncio.Semaphore(concurrency)
         self._pricing = pricing
-        self._review_pricing = review_pricing
+        self._model_pricing = model_pricing or []
 
         self._stats = RunStats()
         self._progress: Progress | None = None
@@ -359,7 +358,7 @@ class TaskRunner:
             cost = estimate_cost_usd(response.usage, self._pricing.rates)
         else:
             cost = estimate_solve_cost_usd(
-                response.run_usage, response.transcript, self._pricing, self._review_pricing
+                response.run_usage, response.transcript, self._pricing, self._model_pricing
             )
         return float(cost) if cost is not None else None
 
@@ -780,18 +779,20 @@ async def run(
     api_keys = solve_profile.resolve_api_keys()
     # A run keeps the rates it started with; a migrated released run recorded none.
     pricing: PricingSnapshot | None = None
-    review_pricing: PricingSnapshot | None = None
+    model_pricing: list[PricingSnapshot] = []
     if isinstance(existing_metadata, RunMetadata):
         pricing = existing_metadata.pricing
-        review_pricing = existing_metadata.review_pricing
+        model_pricing = existing_metadata.model_pricing
     elif existing_metadata is None:
-        # The default model runs the solve; a review role naming another model runs the reviews.
+        # The default model runs the solve; a review may run on any other model of the profile.
         configuration = solve_profile.configuration
-        default_name = configuration.modelRoles["default"]
-        pricing = pricing_for(configuration.models[default_name])
-        review_name = configuration.modelRoles.get(REVIEW_ROLE, default_name)
-        if configuration.models[review_name].model != configuration.models[default_name].model:
-            review_pricing = pricing_for(configuration.models[review_name])
+        default_model = configuration.models[configuration.modelRoles["default"]]
+        pricing = pricing_for(default_model)
+        others: dict[str, PricingSnapshot] = {}
+        for model in configuration.models.values():
+            if model.model != default_model.model and (snapshot := pricing_for(model)):
+                others.setdefault(snapshot.model, snapshot)
+        model_pricing = list(others.values())
 
     async with SolveClient(solve_server_url, timeout_seconds) as solve_client:
         try:
@@ -822,7 +823,7 @@ async def run(
                         numeric_tolerance_mode=numeric_tolerance_mode,
                         dataset_path=str(dataset_path.resolve()),
                         pricing=pricing,
-                        review_pricing=review_pricing,
+                        model_pricing=model_pricing,
                     )
                 )
 
@@ -833,7 +834,7 @@ async def run(
                 run_dir=run_dir,
                 concurrency=concurrency,
                 pricing=pricing,
-                review_pricing=review_pricing,
+                model_pricing=model_pricing,
             )
             return await runner.run_all(tasks)
         finally:
