@@ -56,6 +56,18 @@ CATALOG = (
             cache_write_1h=Decimal("8"),
         ),
     ),
+    PricingSnapshot(
+        transport="anthropic",
+        model="claude-haiku-5-5",
+        source="Anthropic list prices for claude-haiku-5-5 up to 100K tokens, entered 2026-10-09",
+        rates=ModelRates(
+            input=Decimal("0.10"),
+            output=Decimal("0.50"),
+            cache_read=Decimal("0.01"),
+            cache_write_5m=Decimal("0.125"),
+            cache_write_1h=Decimal("0.20"),
+        ),
+    ),
 )
 
 
