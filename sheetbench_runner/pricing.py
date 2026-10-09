@@ -1,7 +1,7 @@
 """USD cost estimates from the token usage the providers reported."""
 
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -101,3 +101,81 @@ def estimate_cost_usd(usage: "SolveUsage", rates: ModelRates) -> Decimal | None:
     return (
         sum((tokens * rate for tokens, rate in priced if rate is not None), Decimal(0)) / 1_000_000
     )
+
+
+# The solve-context role whose model runs the reviewer; its reviews are priced at its rates.
+REVIEW_ROLE = "review"
+
+# Each SolveUsage field and the key a transcript's review records it under.
+REVIEW_USAGE_KEYS = {
+    "turns": "turns",
+    "tool_calls": "toolCalls",
+    "input_tokens": "inputTokens",
+    "output_tokens": "outputTokens",
+    "uncached_input_tokens": "uncachedInputTokens",
+    "cache_read_input_tokens": "cacheReadInputTokens",
+    "cache_write_input_tokens": "cacheWriteInputTokens",
+    "cache_write_5m_input_tokens": "cacheWrite5mInputTokens",
+    "cache_write_1h_input_tokens": "cacheWrite1hInputTokens",
+}
+
+
+def _summed_review_usage(reviews: list[dict[str, Any]]) -> "SolveUsage | None":
+    """The reviews' usage added up; a part is None when any review lacks it."""
+    from .entities import SolveUsage
+
+    parts: dict[str, int | None] = {}
+    for field, key in REVIEW_USAGE_KEYS.items():
+        values = [review.get(key) for review in reviews]
+        counts = [value for value in values if isinstance(value, int)]
+        parts[field] = sum(counts) if len(counts) == len(values) else None
+    required = ("turns", "tool_calls", "input_tokens", "output_tokens")
+    if any(parts[field] is None for field in required):
+        return None
+    return SolveUsage.model_validate(parts)
+
+
+def _without(usage: "SolveUsage", part: "SolveUsage") -> "SolveUsage | None":
+    """`usage` less `part`, field by field; None when a field would go negative."""
+    from .entities import SolveUsage
+
+    rest: dict[str, int | None] = {}
+    for field in REVIEW_USAGE_KEYS:
+        whole, taken = getattr(usage, field), getattr(part, field)
+        if whole is None or taken is None:
+            rest[field] = None
+        elif whole < taken:
+            return None
+        else:
+            rest[field] = whole - taken
+    return SolveUsage.model_validate(rest)
+
+
+def estimate_solve_cost_usd(
+    usage: "SolveUsage",
+    transcript: dict[str, Any],
+    pricing: PricingSnapshot,
+    review_pricing: PricingSnapshot | None = None,
+) -> Decimal | None:
+    """
+    A solve's cost when its reviews may run on another model than the solver.
+
+    The transcript's reviews that ran on another model than `pricing`'s are priced at
+    `review_pricing`, and the rest of `usage` at `pricing`. None when such a review ran on a
+    model `review_pricing` does not price, or its usage cannot be taken out of the whole.
+    """
+    reviews = [r for r in transcript.get("reviews") or [] if isinstance(r, dict)]
+    other = [r for r in reviews if r.get("model") != pricing.model]
+    if not other:
+        return estimate_cost_usd(usage, pricing.rates)
+    if review_pricing is None or any(r.get("model") != review_pricing.model for r in other):
+        return None
+    review_usage = _summed_review_usage(other)
+    solver_usage = _without(usage, review_usage) if review_usage is not None else None
+    if review_usage is None or solver_usage is None:
+        return None
+    solver_cost = estimate_cost_usd(solver_usage, pricing.rates)
+    review_cost = estimate_cost_usd(review_usage, review_pricing.rates)
+    if solver_cost is None or review_cost is None:
+        return None
+    return solver_cost + review_cost
