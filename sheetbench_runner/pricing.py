@@ -1,7 +1,8 @@
 """USD cost estimates from the token usage the providers reported."""
 
+from collections.abc import Sequence
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -56,6 +57,18 @@ CATALOG = (
             cache_write_1h=Decimal("8"),
         ),
     ),
+    PricingSnapshot(
+        transport="anthropic",
+        model="claude-haiku-5-5",
+        source="Anthropic list prices for claude-haiku-5-5 up to 100K tokens, entered 2026-10-09",
+        rates=ModelRates(
+            input=Decimal("0.10"),
+            output=Decimal("0.50"),
+            cache_read=Decimal("0.01"),
+            cache_write_5m=Decimal("0.125"),
+            cache_write_1h=Decimal("0.20"),
+        ),
+    ),
 )
 
 
@@ -89,3 +102,84 @@ def estimate_cost_usd(usage: "SolveUsage", rates: ModelRates) -> Decimal | None:
     return (
         sum((tokens * rate for tokens, rate in priced if rate is not None), Decimal(0)) / 1_000_000
     )
+
+
+# Each SolveUsage field and the key a transcript's review records it under.
+REVIEW_USAGE_KEYS = {
+    "turns": "turns",
+    "tool_calls": "toolCalls",
+    "input_tokens": "inputTokens",
+    "output_tokens": "outputTokens",
+    "uncached_input_tokens": "uncachedInputTokens",
+    "cache_read_input_tokens": "cacheReadInputTokens",
+    "cache_write_input_tokens": "cacheWriteInputTokens",
+    "cache_write_5m_input_tokens": "cacheWrite5mInputTokens",
+    "cache_write_1h_input_tokens": "cacheWrite1hInputTokens",
+}
+
+
+def _summed_review_usage(reviews: list[dict[str, Any]]) -> "SolveUsage | None":
+    """The reviews' usage added up; a part is None when any review lacks it."""
+    from .entities import SolveUsage
+
+    parts: dict[str, int | None] = {}
+    for field, key in REVIEW_USAGE_KEYS.items():
+        values = [review.get(key) for review in reviews]
+        counts = [value for value in values if isinstance(value, int)]
+        parts[field] = sum(counts) if len(counts) == len(values) else None
+    required = ("turns", "tool_calls", "input_tokens", "output_tokens")
+    if any(parts[field] is None for field in required):
+        return None
+    return SolveUsage.model_validate(parts)
+
+
+def _without(usage: "SolveUsage", part: "SolveUsage") -> "SolveUsage | None":
+    """`usage` less `part`, field by field; None when a field would go negative."""
+    from .entities import SolveUsage
+
+    rest: dict[str, int | None] = {}
+    for field in REVIEW_USAGE_KEYS:
+        whole, taken = getattr(usage, field), getattr(part, field)
+        if whole is None or taken is None:
+            rest[field] = None
+        elif whole < taken:
+            return None
+        else:
+            rest[field] = whole - taken
+    return SolveUsage.model_validate(rest)
+
+
+def estimate_solve_cost_usd(
+    usage: "SolveUsage",
+    transcript: dict[str, Any],
+    pricing: PricingSnapshot,
+    model_pricing: Sequence[PricingSnapshot] = (),
+) -> Decimal | None:
+    """
+    A solve's cost, priced by the model each part ran on.
+
+    The transcript's reviews that ran on another model than `pricing`'s are priced at that
+    model's entry in `model_pricing`, and the rest of `usage` at `pricing`. None when such a
+    review ran on a model `model_pricing` does not price, or its usage cannot be taken out of
+    the whole.
+    """
+    by_model = {snapshot.model: snapshot for snapshot in model_pricing}
+    reviews_by_model: dict[str, list[dict[str, Any]]] = {}
+    for review in transcript.get("reviews") or []:
+        if isinstance(review, dict) and review.get("model") != pricing.model:
+            reviews_by_model.setdefault(str(review.get("model")), []).append(review)
+    total = Decimal(0)
+    rest = usage
+    for model, reviews in reviews_by_model.items():
+        snapshot = by_model.get(model)
+        review_usage = _summed_review_usage(reviews)
+        if snapshot is None or review_usage is None:
+            return None
+        remaining = _without(rest, review_usage)
+        review_cost = estimate_cost_usd(review_usage, snapshot.rates)
+        if remaining is None or review_cost is None:
+            return None
+        rest = remaining
+        total += review_cost
+    solver_cost = estimate_cost_usd(rest, pricing.rates)
+    return total + solver_cost if solver_cost is not None else None

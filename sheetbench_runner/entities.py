@@ -265,4 +265,8 @@ class RunMetadata(BaseModel):
     dataset_path: str | None = None
     # The rates the run's cost estimates use; None when the run started without catalog rates.
     pricing: PricingSnapshot | None = Field(default=None, exclude_if=lambda value: value is None)
+    # The rates of the profile's other models, by model; a review that ran on one is priced at it.
+    model_pricing: list[PricingSnapshot] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
     created_at: datetime = Field(default_factory=datetime.now)
