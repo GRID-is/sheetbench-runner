@@ -19,7 +19,7 @@ class RetryableSolveError(SolveError):
     """
     Transient error that should trigger a retry.
 
-    This includes 5xx errors and connection failures.
+    This includes 5xx errors, 408 Request Timeout and connection failures.
     """
 
 
@@ -41,7 +41,7 @@ class NonRetryableSolveError(SolveError):
     """
     Permanent error that should not be retried.
 
-    This includes 4xx errors (bad request, validation errors).
+    This includes 4xx errors other than 408 (bad request, validation errors).
     """
 
 
@@ -60,7 +60,7 @@ async def handle_http_errors(operation: str) -> AsyncIterator[None]:
         yield
     except httpx.HTTPStatusError as e:
         detail = f": {e.response.text[:_ERROR_TEXT_MAX_LENGTH]}"
-        if e.response.status_code >= 500:
+        if e.response.status_code >= 500 or e.response.status_code == 408:
             raise RetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
         raise NonRetryableSolveError(f"{operation} error {e.response.status_code}{detail}") from e
     except httpx.TimeoutException as e:
@@ -246,8 +246,8 @@ class SolveClient:
             The workbook ID assigned by the server
 
         Raises:
-            RetryableSolveError: For 5xx errors, timeouts, connection failures
-            NonRetryableSolveError: For 4xx errors
+            RetryableSolveError: For 5xx and 408 errors, timeouts, connection failures
+            NonRetryableSolveError: For other 4xx errors
         """
         files = {
             "file": (
@@ -284,9 +284,9 @@ class SolveClient:
             SolveResponse with inline transcript and workbook bytes
 
         Raises:
-            RetryableSolveError: For 5xx errors, timeouts, connection failures, and a solve
+            RetryableSolveError: For 5xx and 408 errors, timeouts, connection failures, and a solve
                 the provider ended (rate limit, provider error, dropped connection)
-            NonRetryableSolveError: For 4xx errors
+            NonRetryableSolveError: For other 4xx errors
         """
         payload: dict[str, object] = {
             "workbookId": workbook_id,
@@ -319,8 +319,8 @@ class SolveClient:
             The xlsx file bytes
 
         Raises:
-            RetryableSolveError: For 5xx errors, timeouts, connection failures
-            NonRetryableSolveError: For 4xx errors (including 404)
+            RetryableSolveError: For 5xx and 408 errors, timeouts, connection failures
+            NonRetryableSolveError: For other 4xx errors (including 404)
         """
         async with handle_http_errors("Download"):
             response = await self.client.get(f"{self.base_url}/workbooks/{workbook_id}/download")

@@ -32,6 +32,7 @@ from sheetbench_runner.runner import RunStats, TaskRunner, run
 from sheetbench_runner.solve_client import (
     ProviderEndedSolveError,
     RetryableSolveError,
+    SolveClient,
     SolveResponse,
     SolveTimeoutError,
 )
@@ -891,6 +892,60 @@ async def test_connection_errors_on_every_attempt_leave_the_task_unrecorded(
     assert solve_client.upload_workbook.await_count == 3
     assert not (run_path / "results.json").exists()
     assert stats.errors == 1
+
+
+@pytest.mark.parametrize(
+    ("upload_responses", "recorded", "errors"),
+    [
+        ([httpx.Response(408), httpx.Response(200, json={"id": "wb-1"})], True, 0),
+        ([httpx.Response(408)] * 3, False, 1),
+    ],
+    ids=["recovers", "exhausts-attempts"],
+)
+@respx.mock
+async def test_an_upload_request_timeout_is_retried(
+    tmp_path: Path,
+    sample_task: Task,
+    monkeypatch: pytest.MonkeyPatch,
+    upload_responses: list[httpx.Response],
+    recorded: bool,
+    errors: int,
+) -> None:
+    # Arrange
+    monkeypatch.setattr(runner_module, "TRANSIENT_RETRY_WAIT_SECONDS", 0)
+    context_routes()
+    upload_route = respx.post("http://localhost:3000/workbooks/upload").mock(
+        side_effect=upload_responses
+    )
+    respx.post("http://localhost:3000/solve").mock(
+        return_value=httpx.Response(200, json=solved("wb-1").model_dump(mode="json"))
+    )
+    run_path = tmp_path / "run"
+    run_path.mkdir()
+    input_path = tmp_path / "input.xlsx"
+    input_path.write_bytes(b"input")
+    dataset = Mock()
+    dataset.get_input_path.return_value = input_path
+    evaluator = Mock()
+    evaluator.evaluate.return_value = EvaluationResult(passed=True)
+
+    # Act
+    async with SolveClient("http://localhost:3000") as client:
+        await client.create_solve_context(
+            SolveConfiguration.model_validate(PROFILE_CONFIGURATION), {"primary": "key"}
+        )
+        runner = TaskRunner(
+            solve_client=client,
+            evaluator=evaluator,
+            dataset=dataset,
+            run_dir=RunDirectory(run_path),
+        )
+        stats = await runner.run_all([sample_task])
+
+    # Assert
+    assert upload_route.call_count == len(upload_responses)
+    assert (run_path / "results.json").exists() == recorded
+    assert stats.errors == errors
 
 
 async def test_an_interrupt_finishes_running_tasks_without_starting_new_ones(
