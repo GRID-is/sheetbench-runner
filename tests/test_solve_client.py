@@ -309,6 +309,25 @@ async def test_solve_http_errors(status_code: int, error_type: type[Exception]) 
             await client.solve("wb-123", "Test prompt")
 
 
+@pytest.mark.parametrize(
+    ("status_code", "error_type"),
+    [(408, RetryableSolveError), (500, RetryableSolveError), (400, NonRetryableSolveError)],
+)
+@respx.mock
+async def test_upload_http_errors(
+    tmp_path: Path, status_code: int, error_type: type[Exception]
+) -> None:
+    xlsx_file = tmp_path / "test.xlsx"
+    xlsx_file.write_bytes(b"fake-xlsx-content")
+    respx.post("http://localhost:3000/workbooks/upload").mock(
+        return_value=httpx.Response(status_code, text="upload error")
+    )
+    async with SolveClient("http://localhost:3000") as client:
+        await activate_context(client)
+        with pytest.raises(error_type, match=str(status_code)):
+            await client.upload_workbook(xlsx_file)
+
+
 @respx.mock
 async def test_upload_connection_error_raises_transient(tmp_path: Path) -> None:
     xlsx_file = tmp_path / "test.xlsx"
