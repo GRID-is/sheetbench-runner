@@ -437,8 +437,10 @@ class TaskRunner:
                 for attempt in range(1, TRANSIENT_ATTEMPTS + 1):
                     try:
                         input_path = self._dataset.get_input_path(task)
-                        workbook_id = await self._solve_client.upload_workbook(input_path)
-                        logger.info(f"Task {task.id} uploaded workbook as {workbook_id}")
+                        workbook_id = None
+                        if input_path is not None:
+                            workbook_id = await self._solve_client.upload_workbook(input_path)
+                            logger.info(f"Task {task.id} uploaded workbook as {workbook_id}")
                         prompt = build_prompt(task, workbook_id)
                         response = await self._solve_client.solve(workbook_id, prompt)
                         break

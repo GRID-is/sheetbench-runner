@@ -51,9 +51,10 @@ class Dataset:
             return [t for t in self._tasks if t.id in task_ids]
         return list(self._tasks)
 
-    def get_input_path(self, task: Task) -> Path:
-        """Get the path to the input spreadsheet for a task."""
-        return self.dataset_path / task.input_relpath
+    def get_input_path(self, task: Task) -> Path | None:
+        """Get the path to the input spreadsheet for a task, or None when it has none."""
+        relpath = task.input_relpath
+        return None if relpath is None else self.dataset_path / relpath
 
     def get_golden_path(self, task: Task) -> Path:
         """Get the path to the golden (expected) spreadsheet for a task."""

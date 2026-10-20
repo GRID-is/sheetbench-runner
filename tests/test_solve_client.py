@@ -111,6 +111,24 @@ async def test_context_lifecycle_uses_contract_headers_and_bodies(tmp_path: Path
 
 
 @respx.mock
+async def test_a_solve_without_a_workbook_sends_no_workbook_id() -> None:
+    respx.post("http://localhost:3000/solve-contexts").mock(
+        return_value=httpx.Response(201, json=context_response())
+    )
+    solve_route = respx.post("http://localhost:3000/solve").mock(
+        return_value=httpx.Response(200, json={**solve_response(), "workbookId": "wb-new"})
+    )
+
+    async with SolveClient("http://localhost:3000") as client:
+        await client.create_solve_context(SOLVE_PROFILE, {"primary": "test-key"})
+        await client.solve(None, "Test prompt")
+
+    assert json.loads(solve_route.calls[0].request.content) == {
+        "messages": [{"role": "user", "content": "Test prompt"}],
+    }
+
+
+@respx.mock
 async def test_context_request_repeats_shared_keys_and_supports_different_keys() -> None:
     profile = SolveConfiguration.model_validate(
         {

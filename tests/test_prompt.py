@@ -41,6 +41,23 @@ def test_build_prompt_withholds_extra_hints():
     assert "DATAPOS_SENTINEL" not in prompt
 
 
+def test_build_prompt_without_a_workbook_has_no_workbook_id_section():
+    # Arrange
+    task = Task(
+        id="A1",
+        instruction="Build a DCF model.\n\n## Drivers\n| F4 | 1 |",
+        answer_position="Overview!C4:C10",
+        golden_response_path="A1_golden.xlsx",
+    )
+
+    # Act
+    prompt = build_prompt(task, None)
+
+    # Assert
+    assert "workbook_id" not in prompt
+    assert prompt.endswith("### instruction\nBuild a DCF model.\n\n## Drivers\n| F4 | 1 |\n")
+
+
 def test_build_prompt_minimal(sample_task_minimal: Task):
     """Test prompt building with only required fields."""
     # Arrange

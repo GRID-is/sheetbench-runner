@@ -818,6 +818,42 @@ async def test_results_row_records_the_input_workbook_relative_to_the_dataset(
     assert row["output_file"] == "01_01-output.xlsx"
 
 
+async def test_a_task_without_an_input_workbook_solves_without_an_upload(tmp_path: Path) -> None:
+    # Arrange
+    run_path = tmp_path / "run"
+    run_path.mkdir()
+    task = Task(
+        id="A1",
+        instruction="Build a DCF model.",
+        answer_position="Overview!C4:C10",
+        golden_response_path="A1_golden.xlsx",
+    )
+    solve_client = Mock()
+    solve_client.upload_workbook = AsyncMock()
+    solve_client.solve = AsyncMock(return_value=solved("wb-new"))
+    evaluator = Mock()
+    evaluator.evaluate.return_value = EvaluationResult(passed=False)
+    runner = TaskRunner(
+        solve_client=solve_client,
+        evaluator=evaluator,
+        dataset=Dataset.__new__(Dataset),
+        run_dir=RunDirectory(run_path),
+    )
+
+    # Act
+    await runner.run_all([task])
+
+    # Assert
+    solve_client.upload_workbook.assert_not_awaited()
+    [(workbook_id, prompt)] = [call.args for call in solve_client.solve.await_args_list]
+    assert workbook_id is None
+    assert "workbook_id" not in prompt
+    assert "Build a DCF model." in prompt
+    [row] = json.loads((run_path / "results.json").read_text())
+    assert "input_file" not in row
+    assert row["output_file"] == "A1-output.xlsx"
+
+
 def solved(workbook_id: str = "wb-123") -> SolveResponse:
     return SolveResponse(
         id=f"solve-{workbook_id}",
