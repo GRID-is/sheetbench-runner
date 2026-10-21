@@ -82,6 +82,17 @@ CATALOG = (
         ),
     ),
     PricingSnapshot(
+        transport="openai-compatible",
+        model="qwen-3-8-27b",
+        base_url="https://api.compactif.ai/v1",
+        source="Multiverse Computing list prices for qwen-3-8-27b (reasoning), entered 2026-10-21",
+        rates=ModelRates(
+            input=Decimal("0.10"),
+            output=Decimal("0.50"),
+            cache_read=Decimal("0.019"),
+        ),
+    ),
+    PricingSnapshot(
         transport="openai-responses",
         model="gpt-5.6-terra",
         source="OpenAI list prices for gpt-5.6-terra up to 272K input tokens, entered 2026-10-21",

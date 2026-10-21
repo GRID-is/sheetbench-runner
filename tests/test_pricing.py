@@ -183,6 +183,32 @@ def test_sonnet_5_5_prices_cache_reads_at_a_twentieth_of_input() -> None:
     assert cost == Decimal("8.5")
 
 
+def test_qwen_on_multiverse_is_priced_at_its_reasoning_rates() -> None:
+    # Arrange: $0.10 uncached + $0.19 read + $0.05 output.
+    model = ProfileModel.model_validate(
+        {
+            "transport": "openai-compatible",
+            "apiKeyEnv": "KEY",
+            "baseUrl": "https://api.compactif.ai/v1",
+            "request": {"model": "qwen-3-8-27b"},
+        }
+    )
+    pricing = pricing_for(model)
+    assert pricing is not None
+    solve_usage = usage(
+        input_tokens=11_000_000,
+        uncached_input_tokens=1_000_000,
+        cache_read_input_tokens=10_000_000,
+        cache_write_input_tokens=0,
+    )
+
+    # Act
+    cost = estimate_cost_usd(solve_usage, pricing.rates)
+
+    # Assert
+    assert cost == Decimal("0.34")
+
+
 def test_the_openai_models_price_cache_writes_at_a_flat_rate() -> None:
     # Arrange: terra $2 + $2 read + $3.75 write + $1.20 output; luna $0.10 + $0.10 + $0.1875 + $0.05
     solve_usage = usage(
