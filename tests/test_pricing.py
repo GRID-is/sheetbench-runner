@@ -165,6 +165,24 @@ def test_haiku_5_5_prices_each_part_of_the_input_at_its_short_prompt_rate() -> N
     assert cost == Decimal("0.475")
 
 
+def test_sonnet_5_5_prices_cache_reads_at_a_twentieth_of_input() -> None:
+    # Arrange: $2 uncached + $1 read + $2.50 5m write + $2 1h write + $1 output.
+    pricing = snapshot("claude-sonnet-5-5")
+    solve_usage = usage(
+        uncached_input_tokens=1_000_000,
+        cache_read_input_tokens=10_000_000,
+        cache_write_input_tokens=1_500_000,
+        cache_write_5m_input_tokens=1_000_000,
+        cache_write_1h_input_tokens=500_000,
+    )
+
+    # Act
+    cost = estimate_cost_usd(solve_usage, pricing.rates)
+
+    # Assert
+    assert cost == Decimal("8.5")
+
+
 def test_the_openai_models_price_cache_writes_at_a_flat_rate() -> None:
     # Arrange: terra $2 + $2 read + $3.75 write + $1.20 output; luna $0.10 + $0.10 + $0.1875 + $0.05
     solve_usage = usage(

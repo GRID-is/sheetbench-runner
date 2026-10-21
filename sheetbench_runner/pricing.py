@@ -70,6 +70,18 @@ CATALOG = (
         ),
     ),
     PricingSnapshot(
+        transport="anthropic",
+        model="claude-sonnet-5-5",
+        source="Anthropic list prices for claude-sonnet-5-5, entered 2026-10-21",
+        rates=ModelRates(
+            input=Decimal("2"),
+            output=Decimal("10"),
+            cache_read=Decimal("0.10"),
+            cache_write_5m=Decimal("2.50"),
+            cache_write_1h=Decimal("4"),
+        ),
+    ),
+    PricingSnapshot(
         transport="openai-responses",
         model="gpt-5.6-terra",
         source="OpenAI list prices for gpt-5.6-terra up to 272K input tokens, entered 2026-10-21",
