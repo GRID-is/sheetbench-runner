@@ -270,14 +270,14 @@ class SolveClient:
 
     async def solve(
         self,
-        workbook_id: str,
+        workbook_id: str | None,
         prompt: str,
     ) -> SolveResponse:
         """
         Solve a task using the /solve endpoint.
 
         Args:
-            workbook_id: ID of the uploaded workbook
+            workbook_id: ID of the uploaded workbook; None asks the server to start from no workbook
             prompt: The formatted prompt with workbook_id
 
         Returns:
@@ -288,10 +288,9 @@ class SolveClient:
                 the provider ended (rate limit, provider error, dropped connection)
             NonRetryableSolveError: For other 4xx errors
         """
-        payload: dict[str, object] = {
-            "workbookId": workbook_id,
-            "messages": [{"role": "user", "content": prompt}],
-        }
+        payload: dict[str, object] = {"messages": [{"role": "user", "content": prompt}]}
+        if workbook_id is not None:
+            payload["workbookId"] = workbook_id
 
         async with handle_http_errors("Solve"):
             response = await self._send_with_context(

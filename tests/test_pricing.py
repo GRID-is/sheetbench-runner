@@ -165,6 +165,75 @@ def test_haiku_5_5_prices_each_part_of_the_input_at_its_short_prompt_rate() -> N
     assert cost == Decimal("0.475")
 
 
+def test_sonnet_5_5_prices_cache_reads_at_a_twentieth_of_input() -> None:
+    # Arrange: $2 uncached + $1 read + $2.50 5m write + $2 1h write + $1 output.
+    pricing = snapshot("claude-sonnet-5-5")
+    solve_usage = usage(
+        uncached_input_tokens=1_000_000,
+        cache_read_input_tokens=10_000_000,
+        cache_write_input_tokens=1_500_000,
+        cache_write_5m_input_tokens=1_000_000,
+        cache_write_1h_input_tokens=500_000,
+    )
+
+    # Act
+    cost = estimate_cost_usd(solve_usage, pricing.rates)
+
+    # Assert
+    assert cost == Decimal("8.5")
+
+
+def test_qwen_on_multiverse_is_priced_at_its_reasoning_rates() -> None:
+    # Arrange: $0.10 uncached + $0.19 read + $0.05 output.
+    model = ProfileModel.model_validate(
+        {
+            "transport": "openai-compatible",
+            "apiKeyEnv": "KEY",
+            "baseUrl": "https://api.compactif.ai/v1",
+            "request": {"model": "qwen-3-8-27b"},
+        }
+    )
+    pricing = pricing_for(model)
+    assert pricing is not None
+    solve_usage = usage(
+        input_tokens=11_000_000,
+        uncached_input_tokens=1_000_000,
+        cache_read_input_tokens=10_000_000,
+        cache_write_input_tokens=0,
+    )
+
+    # Act
+    cost = estimate_cost_usd(solve_usage, pricing.rates)
+
+    # Assert
+    assert cost == Decimal("0.34")
+
+
+def test_the_openai_models_price_cache_writes_at_a_flat_rate() -> None:
+    # Arrange: terra $2 + $2 read + $3.75 write + $1.20 output; luna $0.10 + $0.10 + $0.1875 + $0.05
+    solve_usage = usage(
+        uncached_input_tokens=1_000_000,
+        cache_read_input_tokens=10_000_000,
+        cache_write_input_tokens=1_500_000,
+    )
+    models = [
+        ProfileModel.model_validate(
+            {"transport": "openai-responses", "apiKeyEnv": "KEY", "request": {"model": model}}
+        )
+        for model in ("gpt-5.6-terra", "gpt-6-luna")
+    ]
+
+    # Act
+    costs = []
+    for model in models:
+        pricing = pricing_for(model)
+        assert pricing is not None
+        costs.append(estimate_cost_usd(solve_usage, pricing.rates))
+
+    # Assert
+    assert costs == [Decimal("8.95"), Decimal("0.4375")]
+
+
 def snapshot(model: str) -> PricingSnapshot:
     pricing = pricing_for(OPUS_5_5.model_copy(update={"request": {"model": model}}))
     assert pricing is not None

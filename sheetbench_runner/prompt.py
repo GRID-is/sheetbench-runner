@@ -49,13 +49,14 @@ preserved as much as possible.
 """
 
 
-def build_prompt(task: Task, workbook_id: str) -> str:
+def build_prompt(task: Task, workbook_id: str | None) -> str:
     """
     Build the prompt for a SpreadsheetBench task.
 
     Args:
         task: The task to build the prompt for
-        workbook_id: ID of the uploaded workbook
+        workbook_id: ID of the uploaded workbook; None for a task without an input
+            workbook, whose prompt has no workbook_id section
 
     Returns:
         The formatted prompt string
@@ -63,6 +64,12 @@ def build_prompt(task: Task, workbook_id: str) -> str:
     Raises:
         ValueError: If workbook_id is empty
     """
+    if workbook_id is None:
+        if task.instruction_type is not None:
+            raise ValueError("A v1 task always has an input workbook")
+        prompt = PROMPT_TEMPLATE_V2.format(instruction=task.instruction, workbook_id="")
+        return prompt.replace("\n### workbook_id\n\n", "")
+
     if not workbook_id or not workbook_id.strip():
         raise ValueError("workbook_id cannot be empty")
 

@@ -69,6 +69,51 @@ CATALOG = (
             cache_write_1h=Decimal("0.20"),
         ),
     ),
+    PricingSnapshot(
+        transport="anthropic",
+        model="claude-sonnet-5-5",
+        source="Anthropic list prices for claude-sonnet-5-5, entered 2026-10-21",
+        rates=ModelRates(
+            input=Decimal("2"),
+            output=Decimal("10"),
+            cache_read=Decimal("0.10"),
+            cache_write_5m=Decimal("2.50"),
+            cache_write_1h=Decimal("4"),
+        ),
+    ),
+    PricingSnapshot(
+        transport="openai-compatible",
+        model="qwen-3-8-27b",
+        base_url="https://api.compactif.ai/v1",
+        source="Multiverse Computing list prices for qwen-3-8-27b (reasoning), entered 2026-10-21",
+        rates=ModelRates(
+            input=Decimal("0.10"),
+            output=Decimal("0.50"),
+            cache_read=Decimal("0.019"),
+        ),
+    ),
+    PricingSnapshot(
+        transport="openai-responses",
+        model="gpt-5.6-terra",
+        source="OpenAI list prices for gpt-5.6-terra up to 272K input tokens, entered 2026-10-21",
+        rates=ModelRates(
+            input=Decimal("2"),
+            output=Decimal("12"),
+            cache_read=Decimal("0.20"),
+            cache_write=Decimal("2.50"),
+        ),
+    ),
+    PricingSnapshot(
+        transport="openai-responses",
+        model="gpt-6-luna",
+        source="OpenAI list prices for gpt-6-luna up to 272K input tokens, entered 2026-10-21",
+        rates=ModelRates(
+            input=Decimal("0.10"),
+            output=Decimal("0.50"),
+            cache_read=Decimal("0.01"),
+            cache_write=Decimal("0.125"),
+        ),
+    ),
 )
 
 

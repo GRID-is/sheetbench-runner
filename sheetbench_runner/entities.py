@@ -44,13 +44,16 @@ class Task(BaseModel):
       absent, and ``answer_position`` is always fully sheet-qualified.
 
     A present ``golden_response_path`` marks a task as v2.
+
+    A v2 task without ``spreadsheet_path`` has no input workbook: the runner uploads
+    nothing and the agent builds the workbook from scratch.
     """
 
     model_config = ConfigDict(frozen=True, coerce_numbers_to_str=True)
 
     id: str
     instruction: str
-    spreadsheet_path: str
+    spreadsheet_path: str | None = None
     answer_position: str
     instruction_type: str | None = None
     answer_sheet: str | None = None
@@ -58,8 +61,10 @@ class Task(BaseModel):
     golden_response_path: str | None = None
 
     @property
-    def input_relpath(self) -> str:
-        """Path of the input workbook, relative to the dataset directory."""
+    def input_relpath(self) -> str | None:
+        """Path of the input workbook, relative to the dataset directory; None if there is none."""
+        if self.spreadsheet_path is None:
+            return None
         if self.golden_response_path is not None:
             # v2: spreadsheet_path is the input workbook itself
             return self.spreadsheet_path

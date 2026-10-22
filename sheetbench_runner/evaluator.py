@@ -363,17 +363,25 @@ class Evaluator:
         # time, so importing it at module level here would create a cycle.
         from . import evaluator_v2
 
+        input_relpath = task.input_relpath
+        if input_relpath is None:
+            return EvaluationResult(
+                passed=False,
+                message="No input workbook to grade against; grade this task outside the runner",
+                regression_accuracy=0.0,
+                modification_accuracy=0.0,
+            )
         with_font_color = with_formula = False
         if "Debugging" in self.dataset_path.name:
-            if "Color" in task.spreadsheet_path:
+            if "Color" in input_relpath:
                 with_font_color = True
-            if "Embedded" in task.spreadsheet_path:
+            if "Embedded" in input_relpath:
                 with_formula = True
 
         try:
             ranges = _parse_sheet_cell_ranges(task.answer_position, task.answer_sheet)
             return evaluator_v2.compare_workbooks(
-                self.dataset_path / task.input_relpath,
+                self.dataset_path / input_relpath,
                 golden_path,
                 output_path,
                 ranges,
