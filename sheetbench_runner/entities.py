@@ -58,6 +58,11 @@ class Task(BaseModel):
     golden_response_path: str | None = None
 
     @property
+    def family(self) -> str:
+        """The id up to its first underscore: v2 task `07_03` is in family `07`."""
+        return self.id.split("_", 1)[0]
+
+    @property
     def input_relpath(self) -> str:
         """Path of the input workbook, relative to the dataset directory."""
         if self.golden_response_path is not None:

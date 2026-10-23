@@ -3,8 +3,10 @@
 import asyncio
 import json
 import logging
+import random
 import signal
 import time
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -221,10 +223,7 @@ class TaskRunner:
                 with Live(self._build_display(), console=console, refresh_per_second=4) as live:
                     self._live = live
                     with self._stop_signal_handlers():
-                        await asyncio.gather(
-                            *[self._run_task_safe(task) for task in pending_tasks],
-                            return_exceptions=False,  # Exceptions are handled in _run_task_safe
-                        )
+                        await self._run_spread(pending_tasks, concurrency)
                     self._live = None
             except asyncio.CancelledError:
                 if self._aborting:
@@ -270,6 +269,35 @@ class TaskRunner:
                 self._stats.errors += 1
 
         return self._stats
+
+    async def _run_spread(self, tasks: list[Task], workers: int) -> None:
+        """
+        Run tasks in random order on `workers` workers, spreading them over families.
+
+        A free worker takes the next task whose family has none running, and only when every
+        waiting task's family is busy the next task regardless: the tasks of one family share a
+        workbook, so several at once load the machine far more than tasks of different families.
+        """
+        queue = list(tasks)
+        random.shuffle(queue)
+        running: Counter[str] = Counter()
+
+        def take() -> Task | None:
+            if not queue:
+                return None
+            task = next((t for t in queue if not running[t.family]), queue[0])
+            queue.remove(task)
+            return task
+
+        async def worker() -> None:
+            while (task := take()) is not None:
+                running[task.family] += 1
+                try:
+                    await self._run_task_safe(task)  # Exceptions are handled in _run_task_safe
+                finally:
+                    running[task.family] -= 1
+
+        await asyncio.gather(*(worker() for _ in range(workers)))
 
     @contextmanager
     def _stop_signal_handlers(self) -> Iterator[None]:
