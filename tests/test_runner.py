@@ -949,9 +949,11 @@ async def test_an_upload_request_timeout_is_retried(
 
 
 async def test_an_interrupt_finishes_running_tasks_without_starting_new_ones(
-    tmp_path: Path, sample_task: Task, sample_task_minimal: Task
+    tmp_path: Path, sample_task: Task, sample_task_minimal: Task, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Arrange
+    monkeypatch.setattr(runner_module.random, "shuffle", lambda queue: None)
+
     async def interrupted_solve(workbook_id: str, prompt: str) -> SolveResponse:
         os.kill(os.getpid(), signal.SIGINT)
         await asyncio.sleep(0.05)
@@ -996,6 +998,51 @@ async def test_an_interrupt_does_not_count_an_unstarted_task_with_an_error_row_a
     # Assert
     assert stats.not_started == 1
     assert stats.errors == 0
+
+
+def v2_task(task_id: str) -> Task:
+    return Task(
+        id=task_id,
+        instruction="Complete the model",
+        spreadsheet_path=f"spreadsheet/{task_id}_input.xlsx",
+        answer_position="'Model'!A1:B2",
+        golden_response_path=f"spreadsheet/{task_id[:2]}_golden.xlsx",
+    )
+
+
+async def test_a_free_worker_skips_tasks_whose_family_is_running_until_only_those_are_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange
+    tasks = [v2_task(i) for i in ("01_01", "01_02", "02_01", "03_01")]
+    shuffled: list[list[str]] = []
+    monkeypatch.setattr(
+        runner_module.random, "shuffle", lambda queue: shuffled.append([t.id for t in queue])
+    )
+    runner, _, _ = runner_with(tmp_path, [], [])
+    running: list[str] = []
+    starts: list[tuple[str, list[str]]] = []
+
+    async def run_task(task: Task) -> TaskResult:
+        starts.append((task.id, list(running)))
+        running.append(task.id)
+        await asyncio.sleep(0.05 if task.id == "01_01" else 0.01)
+        running.remove(task.id)
+        return TaskResult(task_id=task.id)
+
+    monkeypatch.setattr(runner, "_run_task_safe", run_task)
+
+    # Act
+    await runner._run_spread(tasks, 2)
+
+    # Assert
+    assert shuffled == [["01_01", "01_02", "02_01", "03_01"]]
+    assert starts == [
+        ("01_01", []),
+        ("02_01", ["01_01"]),
+        ("03_01", ["01_01"]),
+        ("01_02", ["01_01"]),
+    ]
 
 
 async def test_a_second_interrupt_aborts_the_running_tasks(
